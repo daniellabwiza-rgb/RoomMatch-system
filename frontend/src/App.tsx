@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './lib/supabaseClient';
 import { User } from '@supabase/supabase-js';
 import { 
@@ -19,10 +19,10 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [view, setView] = useState<'home' | 'login' | 'register' | 'dashboard'>('home');
   const [activeTab, setActiveTab] = useState<'overview' | 'matches' | 'messages' | 'profile' | 'settings'>('overview');
-  
+
   // Form states
   const [username, setUsername] = useState('');
-  const [loginInput, setLoginInput] = useState(''); // Holds username or email
+  const [loginInput, setLoginInput] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -30,14 +30,32 @@ export default function App() {
   const [university, setUniversity] = useState('USIU-Africa');
   const [gender, setGender] = useState('');
 
-  // Lifestyle Preferences Questionnaire States
-  const [preferredGender, setPreferredGender] = useState('No preference');
-  const [accommodationType, setAccommodationType] = useState('Apartment');
-  const [locationCampus, setLocationCampus] = useState('North Campus');
-  const [monthlyBudget, setMonthlyBudget] = useState(780);
-  const [sleepSchedule, setSleepSchedule] = useState('Early sleeper');
-  const [cleanliness, setCleanliness] = useState('Very clean');
-  const [studyHabits, setStudyHabits] = useState('Quiet environment');
+  // Lifestyle Preferences Questionnaire States (All 11 specified criteria)
+  const [preferredGender, setPreferredGender] = useState('');
+  const [accommodationType, setAccommodationType] = useState('');
+  const [locationCampus, setLocationCampus] = useState('');
+  const [minBudget, setMinBudget] = useState<number>(0);
+  const [maxBudget, setMaxBudget] = useState<number>(0);
+  
+  const [sleepSchedule, setSleepSchedule] = useState('');
+  const [wakeUpTime, setWakeUpTime] = useState('');
+  const [smoking, setSmoking] = useState('');
+  const [drinking, setDrinking] = useState('');
+  const [cleanliness, setCleanliness] = useState('');
+  const [noiseLevel, setNoiseLevel] = useState('');
+  const [guests, setGuests] = useState('');
+  const [foodPreference, setFoodPreference] = useState('');
+  const [pets, setPets] = useState('');
+  const [studyHabits, setStudyHabits] = useState('');
+
+  // Derived Budget Category (low, medium, high based on midpoint of min and max)
+  const budgetCategory = useMemo(() => {
+    if (!minBudget && !maxBudget) return '';
+    const mid = ((Number(minBudget) || 0) + (Number(maxBudget) || Number(minBudget) || 0)) / 2;
+    if (mid <= 400) return 'low';
+    if (mid <= 800) return 'medium';
+    return 'high';
+  }, [minBudget, maxBudget]);
 
   // Privacy & Settings States
   const [showGenderInMatches, setShowGenderInMatches] = useState(true);
@@ -47,10 +65,175 @@ export default function App() {
 
   // Chat Messaging States
   const [messages, setMessages] = useState<any[]>([
-    { id: '1', sender: 'Amina', text: 'Hi Maya! I noticed we’re both looking near North Campus.', time: '10:24' },
-    { id: '2', sender: 'Maya', text: 'Hi Amina — yes! Your preference for a quiet study space stood out too.', time: '10:27' }
+    { id: '1', sender: 'Amina', text: 'Hi! I noticed we’re both looking near North Campus.', time: '10:24', unread: true },
+    { id: '2', sender: 'Amina', text: 'Your preference for a quiet study space stood out too.', time: '10:27', unread: true }
   ]);
   const [newMessage, setNewMessage] = useState('');
+  const [otherProfiles, setOtherProfiles] = useState<any[]>([]);
+  const [loadingMatches, setLoadingMatches] = useState<boolean>(false);
+
+  // Real Compatibility Scoring & Gender Eligibility Calculation
+  const potentialMatchesList = useMemo(() => {
+    return otherProfiles
+      .filter((other) => {
+        // Apply gender preference eligibility filter first (does not affect score)
+        const userPref = (preferredGender || 'No preference').toLowerCase();
+        const otherGender = (other.gender || '').toLowerCase();
+        const otherPref = (other.preferred_roommate_gender || 'No preference').toLowerCase();
+        const myGender = (gender || '').toLowerCase();
+
+        const matchesMyPref = userPref === 'no preference' || userPref === '' || userPref === otherGender;
+        const matchesTheirPref = otherPref === 'no preference' || otherPref === '' || otherPref === myGender;
+
+        return matchesMyPref && matchesTheirPref;
+      })
+      .map((other) => {
+        // Weighted scoring across all 11 lifestyle & budget preferences
+        const otherSleep = other.sleep_schedule || other.sleeping_schedule || '';
+        const otherWake = other.wake_up_time || '';
+        const otherSmoking = other.smoking_preference || other.smoking || '';
+        const otherDrinking = other.drinking_preference || other.drinking || '';
+        const otherClean = other.cleanliness_level || other.cleanliness || '';
+        const otherNoise = other.noise_level || '';
+        const otherGuests = other.guest_preference || other.guests || '';
+        const otherFood = other.food_preference || '';
+        const otherPets = other.pet_preference || other.pets || '';
+        const otherStudy = other.study_habits || '';
+        const otherBudgetCat = other.budget_category || '';
+
+        const comparisons = [
+          { label: 'sleep schedule', mine: sleepSchedule, theirs: otherSleep, weight: 12 },
+          { label: 'wake-up time', mine: wakeUpTime, theirs: otherWake, weight: 10 },
+          { label: 'smoking', mine: smoking, theirs: otherSmoking, weight: 10 },
+          { label: 'drinking', mine: drinking, theirs: otherDrinking, weight: 8 },
+          { label: 'cleanliness', mine: cleanliness, theirs: otherClean, weight: 12 },
+          { label: 'noise level', mine: noiseLevel, theirs: otherNoise, weight: 10 },
+          { label: 'guests', mine: guests, theirs: otherGuests, weight: 8 },
+          { label: 'food preference', mine: foodPreference, theirs: otherFood, weight: 6 },
+          { label: 'pets', mine: pets, theirs: otherPets, weight: 8 },
+          { label: 'study habits', mine: studyHabits, theirs: otherStudy, weight: 10 },
+          { label: 'budget range', mine: budgetCategory, theirs: otherBudgetCat, weight: 6 }
+        ];
+
+        let totalScore = 0;
+        const traits: string[] = [];
+
+        comparisons.forEach((item) => {
+          if (item.mine && item.theirs) {
+            if (item.mine.toLowerCase() === item.theirs.toLowerCase()) {
+              totalScore += item.weight;
+              traits.push(item.label);
+            } else if (
+              (item.mine.toLowerCase() === 'flexible' || item.theirs.toLowerCase() === 'flexible') ||
+              (item.mine.toLowerCase() === 'no preference' || item.theirs.toLowerCase() === 'no preference')
+            ) {
+              totalScore += Math.round(item.weight * 0.6);
+            }
+          }
+        });
+
+        const finalScore = Math.min(100, Math.max(25, totalScore));
+        let tag = 'Moderate';
+        if (finalScore >= 85) tag = 'Very high';
+        else if (finalScore >= 70) tag = 'High';
+
+        const displayName = other.full_name || other.username || 'Student';
+        const initials = displayName
+          .split(' ')
+          .map((n: string) => n[0])
+          .join('')
+          .toUpperCase()
+          .slice(0, 2);
+
+        return {
+          id: other.id,
+          name: displayName,
+          initials: initials || 'ST',
+          university: other.university || university,
+          location: other.location || 'Campus Area',
+          score: finalScore,
+          tag,
+          traits: traits.length > 0 ? traits : ['university network']
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+  }, [
+    otherProfiles,
+    preferredGender,
+    gender,
+    sleepSchedule,
+    wakeUpTime,
+    smoking,
+    drinking,
+    cleanliness,
+    noiseLevel,
+    guests,
+    foodPreference,
+    pets,
+    studyHabits,
+    budgetCategory,
+    university
+  ]);
+
+  // Dynamic Calculations for Overview Dashboard
+  const timeGreeting = useMemo(() => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good morning';
+    if (hour < 18) return 'Good afternoon';
+    return 'Good evening';
+  }, []);
+
+  const profileCompletion = useMemo(() => {
+    const fields = [
+      fullName,
+      university,
+      gender,
+      preferredGender,
+      accommodationType,
+      locationCampus,
+      minBudget > 0 ? 'min' : '',
+      maxBudget > 0 ? 'max' : '',
+      sleepSchedule,
+      wakeUpTime,
+      smoking,
+      drinking,
+      cleanliness,
+      noiseLevel,
+      guests,
+      foodPreference,
+      pets,
+      studyHabits
+    ];
+    const filledCount = fields.filter(f => Boolean(f && String(f).trim() !== '')).length;
+    return Math.round((filledCount / fields.length) * 100);
+  }, [
+    fullName,
+    university,
+    gender,
+    preferredGender,
+    accommodationType,
+    locationCampus,
+    minBudget,
+    maxBudget,
+    sleepSchedule,
+    wakeUpTime,
+    smoking,
+    drinking,
+    cleanliness,
+    noiseLevel,
+    guests,
+    foodPreference,
+    pets,
+    studyHabits
+  ]);
+
+  const veryHighMatchesCount = useMemo(() => {
+    return potentialMatchesList.filter(m => m.score >= 85).length;
+  }, [potentialMatchesList]);
+
+  const unreadMessagesCount = useMemo(() => {
+    return messages.filter(m => m.unread).length;
+  }, [messages]);
 
   // Check active session on load
   useEffect(() => {
@@ -76,7 +259,7 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Fetch student profile from Supabase
+  // Fetch student profile & all other student profiles from Supabase
   const fetchUserProfile = async (userId: string) => {
     const { data, error } = await supabase
       .from('profiles')
@@ -89,15 +272,34 @@ export default function App() {
       setUsername(data.username || '');
       setUniversity(data.university || 'USIU-Africa');
       setGender(data.gender || '');
-      // Only set preferences if student has already completed them
       setPreferredGender(data.preferred_roommate_gender || '');
       setAccommodationType(data.accommodation_type || '');
       setLocationCampus(data.location || '');
-      setMonthlyBudget(data.budget || 0);
-      setSleepSchedule(data.sleeping_schedule || '');
-      setCleanliness(data.cleanliness || '');
+      setMinBudget(data.min_budget || 0);
+      setMaxBudget(data.max_budget || data.budget || 0);
+      setSleepSchedule(data.sleep_schedule || data.sleeping_schedule || '');
+      setWakeUpTime(data.wake_up_time || '');
+      setSmoking(data.smoking_preference || '');
+      setDrinking(data.drinking_preference || '');
+      setCleanliness(data.cleanliness_level || data.cleanliness || '');
+      setNoiseLevel(data.noise_level || '');
+      setGuests(data.guest_preference || '');
+      setFoodPreference(data.food_preference || '');
+      setPets(data.pet_preference || '');
       setStudyHabits(data.study_habits || '');
     }
+
+    // Fetch all other real student profiles for dynamic matching
+    setLoadingMatches(true);
+    const { data: allUsersData, error: allUsersError } = await supabase
+      .from('profiles')
+      .select('*')
+      .neq('id', userId);
+
+    if (allUsersData && !allUsersError) {
+      setOtherProfiles(allUsersData);
+    }
+    setLoadingMatches(false);
   };
 
   // Smooth scroll handler for nav links
@@ -112,7 +314,7 @@ export default function App() {
     }
   };
 
-  // Handle Registration - maps username to generated email internally if email not explicitly supplied
+  // Handle Registration - maps username to generated email internally
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -185,6 +387,8 @@ export default function App() {
   // Save updated profile preferences
   const handleSavePreferences = async () => {
     if (!user) return;
+    const midpoint = ((Number(minBudget) || 0) + (Number(maxBudget) || Number(minBudget) || 0)) / 2;
+
     const { error } = await supabase.from('profiles').upsert([
       {
         id: user.id,
@@ -195,9 +399,19 @@ export default function App() {
         preferred_roommate_gender: preferredGender,
         accommodation_type: accommodationType,
         location: locationCampus,
-        budget: monthlyBudget,
-        sleeping_schedule: sleepSchedule,
-        cleanliness: cleanliness,
+        min_budget: minBudget,
+        max_budget: maxBudget,
+        budget: midpoint,
+        budget_category: budgetCategory,
+        sleep_schedule: sleepSchedule,
+        wake_up_time: wakeUpTime,
+        smoking_preference: smoking,
+        drinking_preference: drinking,
+        cleanliness_level: cleanliness,
+        noise_level: noiseLevel,
+        guest_preference: guests,
+        food_preference: foodPreference,
+        pet_preference: pets,
         study_habits: studyHabits
       }
     ]);
@@ -215,7 +429,7 @@ export default function App() {
     if (!newMessage.trim()) return;
     const now = new Date();
     const timeStr = `${now.getHours()}:${now.getMinutes() < 10 ? '0' : ''}${now.getMinutes()}`;
-    setMessages(prev => [...prev, { id: Date.now().toString(), sender: 'Maya', text: newMessage.trim(), time: timeStr }]);
+    setMessages(prev => [...prev, { id: Date.now().toString(), sender: 'Me', text: newMessage.trim(), time: timeStr, unread: false }]);
     setNewMessage('');
   };
 
@@ -246,12 +460,20 @@ export default function App() {
                 <span>Matches</span>
               </button>
 
-              <button onClick={() => setActiveTab('messages')} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'messages' ? 'bg-[#1e293b] text-white font-semibold' : 'text-slate-400 hover:text-white'}`}>
+              <button 
+                onClick={() => {
+                  setActiveTab('messages');
+                  setMessages(prev => prev.map(m => ({ ...m, unread: false })));
+                }} 
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'messages' ? 'bg-[#1e293b] text-white font-semibold' : 'text-slate-400 hover:text-white'}`}
+              >
                 <div className="flex items-center space-x-3">
                   <MessageSquare className="w-4 h-4 text-blue-400" />
                   <span>Messages</span>
                 </div>
-                <span className="bg-[#7c3aed] text-white text-xs px-2 py-0.5 rounded-full font-bold">2</span>
+                {unreadMessagesCount > 0 && (
+                  <span className="bg-[#7c3aed] text-white text-xs px-2 py-0.5 rounded-full font-bold">{unreadMessagesCount}</span>
+                )}
               </button>
 
               <button onClick={() => setActiveTab('profile')} className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'profile' ? 'bg-[#1e293b] text-white font-semibold' : 'text-slate-400 hover:text-white'}`}>
@@ -270,11 +492,11 @@ export default function App() {
             <div className="flex items-center justify-between bg-slate-900/60 p-3 rounded-2xl border border-slate-800">
               <div className="flex items-center space-x-3 text-left">
                 <div className="w-9 h-9 rounded-full bg-[#7c3aed] text-white font-bold flex items-center justify-center text-xs">
-                  {fullName ? fullName.split(' ').map(n => n[0]).join('') : 'U'}
+                  {fullName ? fullName.split(' ').map(n => n[0]).join('') : (username ? username[0].toUpperCase() : 'U')}
                 </div>
                 <div className="overflow-hidden">
-                  <p className="text-xs font-semibold text-white truncate">{fullName || 'Student'}</p>
-                  <p className="text-[10px] text-slate-400 truncate">{user?.email}</p>
+                  <p className="text-xs font-semibold text-white truncate">{fullName || `@${username || 'student'}`}</p>
+                  <p className="text-[10px] text-slate-400 truncate">{university}</p>
                 </div>
               </div>
               <button onClick={handleLogout} className="text-slate-400 hover:text-white transition p-1.5 rounded-lg hover:bg-slate-800" title="Sign out">
@@ -296,22 +518,24 @@ export default function App() {
               <button className="w-9 h-9 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50">
                 <Bell className="w-4 h-4" />
               </button>
-              <div className="flex items-center space-x-2 border border-slate-200 rounded-full px-3 py-1.5 cursor-pointer hover:bg-slate-50">
+              <div onClick={() => setActiveTab('profile')} className="flex items-center space-x-2 border border-slate-200 rounded-full px-3 py-1.5 cursor-pointer hover:bg-slate-50">
                 <UserIcon className="w-3.5 h-3.5 text-purple-600" />
-                <span className="text-xs font-bold text-slate-800">{fullName ? fullName.split(' ')[0] : 'Account'}</span>
+                <span className="text-xs font-bold text-slate-800">{fullName ? fullName.split(' ')[0] : `@${username || 'Account'}`}</span>
                 <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
               </div>
             </div>
           </header>
 
           <div className="p-8 max-w-6xl mx-auto w-full flex-1">
-            {/* 1. OVERVIEW TAB */}
+            {/* 1. OVERVIEW TAB (DYNAMIC) */}
             {activeTab === 'overview' && (
               <div className="space-y-8 text-left">
                 <div className="flex justify-between items-start">
                   <div>
                     <span className="text-xs font-bold text-[#7c3aed] tracking-wider uppercase">STUDENT DASHBOARD</span>
-                    <h1 className="text-3xl font-extrabold text-[#1e293b] mt-1">Good morning, {fullName ? fullName.split(' ')[0] : 'Student'}</h1>
+                    <h1 className="text-3xl font-extrabold text-[#1e293b] mt-1">
+                      {timeGreeting}, {fullName ? fullName.split(' ')[0] : (username || 'Student')}
+                    </h1>
                     <p className="text-sm text-slate-500 mt-1">Your housing search is taking shape. Here's what's new in your workspace.</p>
                   </div>
                   <button onClick={() => setActiveTab('matches')} className="bg-[#7c3aed] text-white px-5 py-2.5 rounded-xl font-semibold shadow-md hover:bg-[#6d28d9] transition text-sm">
@@ -319,13 +543,15 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Dashboard Metrics Grid */}
+                {/* Dynamic Dashboard Metrics Grid */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
                   <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
                     <div>
                       <p className="text-xs text-slate-500 font-medium">Profile completion</p>
-                      <p className="text-3xl font-extrabold text-[#1e293b] mt-2">92%</p>
-                      <p className="text-[11px] text-slate-400 mt-1">One section left</p>
+                      <p className="text-3xl font-extrabold text-[#1e293b] mt-2">{profileCompletion}%</p>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        {profileCompletion === 100 ? 'All sections complete' : 'Complete preferences'}
+                      </p>
                     </div>
                     <div className="w-10 h-10 rounded-xl bg-purple-50 text-[#7c3aed] flex items-center justify-center font-bold">
                       <PieChart className="w-5 h-5" />
@@ -335,7 +561,7 @@ export default function App() {
                   <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
                     <div>
                       <p className="text-xs text-slate-500 font-medium">Potential matches</p>
-                      <p className="text-3xl font-extrabold text-[#1e293b] mt-2">3</p>
+                      <p className="text-3xl font-extrabold text-[#1e293b] mt-2">{potentialMatchesList.length}</p>
                       <p className="text-[11px] text-slate-400 mt-1">Based on current filters</p>
                     </div>
                     <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
@@ -346,7 +572,7 @@ export default function App() {
                   <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
                     <div>
                       <p className="text-xs text-slate-500 font-medium">Very high matches</p>
-                      <p className="text-3xl font-extrabold text-[#1e293b] mt-2">1</p>
+                      <p className="text-3xl font-extrabold text-[#1e293b] mt-2">{veryHighMatchesCount}</p>
                       <p className="text-[11px] text-slate-400 mt-1">Eligible to connect</p>
                     </div>
                     <div className="w-10 h-10 rounded-xl bg-[#7c3aed]/10 text-[#7c3aed] flex items-center justify-center font-bold">
@@ -357,8 +583,10 @@ export default function App() {
                   <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
                     <div>
                       <p className="text-xs text-slate-500 font-medium">Unread messages</p>
-                      <p className="text-3xl font-extrabold text-[#1e293b] mt-2">2</p>
-                      <p className="text-[11px] text-slate-400 mt-1">From 1 conversation</p>
+                      <p className="text-3xl font-extrabold text-[#1e293b] mt-2">{unreadMessagesCount}</p>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        {unreadMessagesCount > 0 ? 'From 1 conversation' : 'All caught up'}
+                      </p>
                     </div>
                     <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
                       <MessageSquare className="w-5 h-5" />
@@ -366,19 +594,26 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Profile Strength Box */}
+                {/* Dynamic Profile Strength Box */}
                 <div className="bg-[#0f172a] text-white p-6 rounded-2xl shadow-md">
                   <span className="text-[10px] font-bold tracking-widest uppercase text-slate-400">PROFILE STRENGTH</span>
                   <div className="flex items-baseline space-x-2 mt-2">
-                    <span className="text-4xl font-extrabold">92</span>
+                    <span className="text-4xl font-extrabold">{profileCompletion}</span>
                     <span className="text-sm text-slate-400">/100</span>
                   </div>
                   <div className="w-full bg-slate-800 h-2 rounded-full my-4 overflow-hidden">
-                    <div className="bg-[#7c3aed] h-full rounded-full w-[92%]"></div>
+                    <div 
+                      className="bg-[#7c3aed] h-full rounded-full transition-all duration-500" 
+                      style={{ width: `${profileCompletion}%` }}
+                    ></div>
                   </div>
-                  <p className="text-xs text-slate-300">Add a short bio to help potential roommates understand you.</p>
+                  <p className="text-xs text-slate-300">
+                    {profileCompletion === 100 
+                      ? 'Your lifestyle profile is 100% complete! Your match accuracy is maximized.'
+                      : 'Fill out your remaining lifestyle preferences so roommates understand your routine.'}
+                  </p>
                   <button onClick={() => setActiveTab('profile')} className="mt-4 text-xs font-bold text-[#7c3aed] hover:underline flex items-center space-x-1">
-                    <span>Complete profile</span>
+                    <span>{profileCompletion === 100 ? 'Review profile' : 'Complete profile'}</span>
                     <span>&rarr;</span>
                   </button>
                 </div>
@@ -394,71 +629,55 @@ export default function App() {
                   <p className="text-xs text-slate-500 mt-1">Gender preference is applied as a separate eligibility filter. It does not affect compatibility scores.</p>
                 </div>
 
-                <div className="grid md:grid-cols-2 gap-6">
-                  {/* Amina Match Card */}
-                  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <div className="flex justify-between items-start">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-14 h-14 rounded-full bg-purple-100 text-[#7c3aed] font-bold flex items-center justify-center text-lg">AY</div>
-                        <div>
-                          <h3 className="font-bold text-lg text-[#1e293b] flex items-center space-x-1">
-                            <span>Amina</span>
-                            <span className="text-blue-500 text-xs">✓</span>
-                          </h3>
-                          <p className="text-xs text-slate-500">{university}</p>
-                          <p className="text-xs text-slate-400">📍 North Campus</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-2xl font-extrabold text-[#7c3aed]">100%</span>
-                        <p className="text-[10px] text-purple-600 font-bold">Very high</p>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      <span className="bg-purple-50 text-[#7c3aed] px-3 py-1 rounded-full text-xs font-medium">✓ sleeping schedule</span>
-                      <span className="bg-purple-50 text-[#7c3aed] px-3 py-1 rounded-full text-xs font-medium">✓ wake-up schedule</span>
-                      <span className="bg-purple-50 text-[#7c3aed] px-3 py-1 rounded-full text-xs font-medium">✓ cleanliness</span>
-                    </div>
-
-                    <p className="text-xs text-slate-600">You both align on sleeping schedule, wake-up schedule, cleanliness.</p>
-                    <button onClick={() => setActiveTab('messages')} className="w-full bg-[#7c3aed] text-white p-3 rounded-xl text-xs font-semibold hover:bg-[#6d28d9] transition">
-                      Send message &rarr;
-                    </button>
+                {loadingMatches ? (
+                  <div className="bg-white p-12 rounded-2xl border border-slate-100 text-center text-sm text-slate-500">
+                    Finding compatible student profiles...
                   </div>
-
-                  {/* Jules Match Card */}
-                  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <div className="flex justify-between items-start">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-14 h-14 rounded-full bg-blue-100 text-blue-600 font-bold flex items-center justify-center text-lg">JC</div>
-                        <div>
-                          <h3 className="font-bold text-lg text-[#1e293b] flex items-center space-x-1">
-                            <span>Jules</span>
-                            <span className="text-blue-500 text-xs">✓</span>
-                          </h3>
-                          <p className="text-xs text-slate-500">{university}</p>
-                          <p className="text-xs text-slate-400">📍 Riverside</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-2xl font-extrabold text-blue-600">76%</span>
-                        <p className="text-[10px] text-blue-600 font-bold">High</p>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-xs font-medium">✓ wake-up schedule</span>
-                      <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-xs font-medium">✓ cleanliness</span>
-                      <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-xs font-medium">✓ study environment</span>
-                    </div>
-
-                    <p className="text-xs text-slate-600">You both align on wake-up schedule, cleanliness, study environment.</p>
-                    <button onClick={() => setActiveTab('messages')} className="w-full border border-slate-200 text-[#1e293b] p-3 rounded-xl text-xs font-semibold hover:bg-slate-50 transition">
-                      Send message &rarr;
-                    </button>
+                ) : potentialMatchesList.length === 0 ? (
+                  <div className="bg-white p-12 rounded-2xl border border-slate-100 text-center space-y-3">
+                    <h3 className="text-base font-bold text-slate-800">No matching student profiles yet</h3>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto">
+                      Create additional student accounts and complete their lifestyle preferences in the Profile tab to see real compatibility matches here.
+                    </p>
                   </div>
-                </div>
+                ) : (
+                  <div className="grid md:grid-cols-2 gap-6">
+                    {potentialMatchesList.map((match) => (
+                      <div key={match.id} className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+                        <div className="flex justify-between items-start">
+                          <div className="flex items-center space-x-3">
+                            <div className="w-14 h-14 rounded-full bg-purple-100 text-[#7c3aed] font-bold flex items-center justify-center text-lg">{match.initials}</div>
+                            <div>
+                              <h3 className="font-bold text-lg text-[#1e293b] flex items-center space-x-1">
+                                <span>{match.name}</span>
+                                <CheckCircle2 className="w-4 h-4 text-blue-500 inline" />
+                              </h3>
+                              <p className="text-xs text-slate-500">{match.university}</p>
+                              <p className="text-xs text-slate-400">{match.location}</p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-2xl font-extrabold text-[#7c3aed]">{match.score}%</span>
+                            <p className="text-[10px] text-purple-600 font-bold">{match.tag}</p>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          {match.traits.map((trait, idx) => (
+                            <span key={idx} className="bg-purple-50 text-[#7c3aed] px-3 py-1 rounded-full text-xs font-medium">
+                              ✓ {trait}
+                            </span>
+                          ))}
+                        </div>
+
+                        <p className="text-xs text-slate-600">You both align on {match.traits.join(', ')}.</p>
+                        <button onClick={() => setActiveTab('messages')} className="w-full bg-[#7c3aed] text-white p-3 rounded-xl text-xs font-semibold hover:bg-[#6d28d9] transition">
+                          Send message &rarr;
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -472,7 +691,7 @@ export default function App() {
 
                 <div className="bg-white rounded-2xl border border-slate-100 shadow-sm grid md:grid-cols-3 min-h-[500px] overflow-hidden">
                   <div className="border-r border-slate-100 p-4 space-y-4">
-                    <input type="text" placeholder="🔍 Search conversations" className="w-full p-3 border border-slate-200 rounded-xl text-xs" />
+                    <input type="text" placeholder="Search conversations..." className="w-full p-3 border border-slate-200 rounded-xl text-xs" />
                     <div className="p-3 bg-purple-50 rounded-xl flex items-center justify-between cursor-pointer">
                       <div className="flex items-center space-x-3">
                         <div className="w-10 h-10 rounded-full bg-purple-200 text-[#7c3aed] font-bold flex items-center justify-center text-xs">AY</div>
@@ -488,10 +707,10 @@ export default function App() {
                   <div className="md:col-span-2 flex flex-col justify-between p-6 bg-slate-50/50">
                     <div className="space-y-4">
                       {messages.map((m) => (
-                        <div key={m.id} className={`flex ${m.sender === 'Maya' ? 'justify-end' : 'justify-start'}`}>
-                          <div className={`p-4 rounded-2xl text-xs max-w-sm ${m.sender === 'Maya' ? 'bg-[#7c3aed] text-white rounded-br-none' : 'bg-white text-slate-800 border border-slate-100 rounded-bl-none shadow-sm'}`}>
+                        <div key={m.id} className={`flex ${m.sender === 'Me' ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`p-4 rounded-2xl text-xs max-w-sm ${m.sender === 'Me' ? 'bg-[#7c3aed] text-white rounded-br-none' : 'bg-white text-slate-800 border border-slate-100 rounded-bl-none shadow-sm'}`}>
                             <p>{m.text}</p>
-                            <p className={`text-[9px] mt-1 text-right ${m.sender === 'Maya' ? 'text-purple-200' : 'text-slate-400'}`}>{m.time}</p>
+                            <p className={`text-[9px] mt-1 text-right ${m.sender === 'Me' ? 'text-purple-200' : 'text-slate-400'}`}>{m.time}</p>
                           </div>
                         </div>
                       ))}
@@ -518,6 +737,11 @@ export default function App() {
                 <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm space-y-6">
                   <div className="grid md:grid-cols-2 gap-6">
                     <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Username</label>
+                      <input type="text" value={username} disabled className="w-full p-3 border border-slate-200 rounded-xl text-sm bg-slate-100 text-slate-500" />
+                    </div>
+
+                    <div>
                       <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Full name</label>
                       <input type="text" value={fullName} onChange={e => setFullName(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-sm" />
                     </div>
@@ -530,6 +754,7 @@ export default function App() {
                     <div>
                       <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Gender</label>
                       <select value={gender} onChange={e => setGender(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-sm bg-white">
+                        <option value="">Select gender...</option>
                         <option value="Female">Female</option>
                         <option value="Male">Male</option>
                         <option value="Other">Other</option>
@@ -539,6 +764,7 @@ export default function App() {
                     <div>
                       <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Preferred roommate gender</label>
                       <select value={preferredGender} onChange={e => setPreferredGender(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-sm bg-white">
+                        <option value="">Select preference...</option>
                         <option value="No preference">No preference</option>
                         <option value="Female">Female</option>
                         <option value="Male">Male</option>
@@ -548,6 +774,7 @@ export default function App() {
                     <div>
                       <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Accommodation type</label>
                       <select value={accommodationType} onChange={e => setAccommodationType(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-sm bg-white">
+                        <option value="">Select accommodation...</option>
                         <option value="Apartment">Apartment</option>
                         <option value="Single room">Single room</option>
                         <option value="Shared room">Shared room</option>
@@ -556,44 +783,153 @@ export default function App() {
 
                     <div>
                       <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Location or campus</label>
-                      <input type="text" value={locationCampus} onChange={e => setLocationCampus(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-sm" />
+                      <input type="text" placeholder="e.g. North Campus" value={locationCampus} onChange={e => setLocationCampus(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-sm" />
                     </div>
 
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Monthly budget ($)</label>
-                      <input type="number" value={monthlyBudget} onChange={e => setMonthlyBudget(Number(e.target.value))} className="w-full p-3 border border-slate-200 rounded-xl text-sm" />
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Min budget ($)</label>
+                        <input type="number" placeholder="300" value={minBudget || ''} onChange={e => setMinBudget(Number(e.target.value))} className="w-full p-3 border border-slate-200 rounded-xl text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Max budget ($)</label>
+                        <input type="number" placeholder="750" value={maxBudget || ''} onChange={e => setMaxBudget(Number(e.target.value))} className="w-full p-3 border border-slate-200 rounded-xl text-sm" />
+                      </div>
                     </div>
                   </div>
 
-                  {/* Lifestyle Questionnaire Fields */}
-                  <div className="pt-6 border-t border-slate-100 grid md:grid-cols-3 gap-6">
+                  {budgetCategory && (
+                    <div className="bg-purple-50 border border-purple-100 px-4 py-2.5 rounded-xl text-xs text-purple-800 flex items-center justify-between">
+                      <span>Computed Budget Tier (based on min/max midpoint):</span>
+                      <span className="font-bold uppercase">{budgetCategory}</span>
+                    </div>
+                  )}
+
+                  {/* Comprehensive Lifestyle Questionnaire Fields (11 Criteria) */}
+                  <div className="pt-6 border-t border-slate-100 space-y-6">
                     <div>
-                      <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Sleeping schedule</label>
-                      <select value={sleepSchedule} onChange={e => setSleepSchedule(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
-                        <option value="Early sleeper">Early sleeper</option>
-                        <option value="Night owl">Night owl</option>
-                      </select>
+                      <h3 className="text-sm font-bold text-[#1e293b]">Lifestyle & Daily Routine Questionnaire</h3>
+                      <p className="text-xs text-slate-500">Complete all preferences below to compute accurate compatibility matches.</p>
                     </div>
 
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Cleanliness</label>
-                      <select value={cleanliness} onChange={e => setCleanliness(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
-                        <option value="Very clean">Very clean</option>
-                        <option value="Moderate">Moderate</option>
-                      </select>
-                    </div>
+                    <div className="grid md:grid-cols-3 gap-6">
+                      {/* 1. Sleep schedule */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">1. Sleep schedule</label>
+                        <select value={sleepSchedule} onChange={e => setSleepSchedule(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select sleep schedule...</option>
+                          <option value="early bird">Early bird</option>
+                          <option value="flexible">Flexible</option>
+                          <option value="night owl">Night owl</option>
+                        </select>
+                      </div>
 
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Study habits</label>
-                      <select value={studyHabits} onChange={e => setStudyHabits(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
-                        <option value="Quiet environment">Quiet environment</option>
-                        <option value="Group study">Group study</option>
-                      </select>
+                      {/* 2. Wake-up time */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">2. Wake-up time</label>
+                        <select value={wakeUpTime} onChange={e => setWakeUpTime(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select wake-up time...</option>
+                          <option value="early (before 6:00)">Early (before 6:00)</option>
+                          <option value="mid (6:00 to 8:00)">Mid (6:00 to 8:00)</option>
+                          <option value="late (after 8:00)">Late (after 8:00)</option>
+                        </select>
+                      </div>
+
+                      {/* 3. Smoking */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">3. Smoking</label>
+                        <select value={smoking} onChange={e => setSmoking(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select smoking habit...</option>
+                          <option value="non-smoker">Non-smoker</option>
+                          <option value="occasional">Occasional</option>
+                          <option value="smoker">Smoker</option>
+                        </select>
+                      </div>
+
+                      {/* 4. Drinking */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">4. Drinking</label>
+                        <select value={drinking} onChange={e => setDrinking(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select drinking habit...</option>
+                          <option value="non-drinker">Non-drinker</option>
+                          <option value="social">Social</option>
+                          <option value="drinker">Drinker</option>
+                        </select>
+                      </div>
+
+                      {/* 5. Cleanliness */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">5. Cleanliness</label>
+                        <select value={cleanliness} onChange={e => setCleanliness(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select cleanliness level...</option>
+                          <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
+                        </select>
+                      </div>
+
+                      {/* 6. Noise level */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">6. Noise level</label>
+                        <select value={noiseLevel} onChange={e => setNoiseLevel(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select noise tolerance...</option>
+                          <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
+                        </select>
+                      </div>
+
+                      {/* 7. Guests */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">7. Guests</label>
+                        <select value={guests} onChange={e => setGuests(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select guest frequency...</option>
+                          <option value="rarely">Rarely</option>
+                          <option value="sometimes">Sometimes</option>
+                          <option value="frequently">Frequently</option>
+                        </select>
+                      </div>
+
+                      {/* 8. Food preference */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">8. Food preference</label>
+                        <select value={foodPreference} onChange={e => setFoodPreference(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select food preference...</option>
+                          <option value="vegan">Vegan</option>
+                          <option value="vegetarian">Vegetarian</option>
+                          <option value="non-vegetarian">Non-vegetarian</option>
+                          <option value="no preference">No preference</option>
+                        </select>
+                      </div>
+
+                      {/* 9. Pets */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">9. Pets</label>
+                        <select value={pets} onChange={e => setPets(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select pet preference...</option>
+                          <option value="has pets">Has pets</option>
+                          <option value="okay with pets">Okay with pets</option>
+                          <option value="not okay with pets">Not okay with pets</option>
+                          <option value="no pets">No pets</option>
+                        </select>
+                      </div>
+
+                      {/* 10. Study habit */}
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">10. Study habit</label>
+                        <select value={studyHabits} onChange={e => setStudyHabits(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-xs bg-white">
+                          <option value="">Select study habit...</option>
+                          <option value="quiet">Quiet</option>
+                          <option value="background noise okay">Background noise okay</option>
+                          <option value="group study">Group study</option>
+                          <option value="rarely studies at home">Rarely studies at home</option>
+                        </select>
+                      </div>
                     </div>
                   </div>
 
                   <div className="flex justify-end pt-4">
-                    <button onClick={handleSavePreferences} className="bg-[#7c3aed] text-[#ffffff] px-8 py-3.5 rounded-xl font-semibold shadow-md hover:bg-[#6d28d9] transition text-sm">
+                    <button onClick={handleSavePreferences} className="bg-[#7c3aed] text-white px-8 py-3.5 rounded-xl font-semibold shadow-md hover:bg-[#6d28d9] transition text-sm">
                       Save preferences
                     </button>
                   </div>
@@ -605,34 +941,41 @@ export default function App() {
             {activeTab === 'settings' && (
               <div className="space-y-6 text-left max-w-4xl">
                 <div>
-                  <span className="text-xs font-bold text-[#7c3aed] tracking-wider uppercase">ACCOUNT</span>
-                  <h1 className="text-3xl font-extrabold text-[#1e293b] mt-1">Settings & privacy</h1>
-                  <p className="text-xs text-slate-500 mt-1">Control notifications, discovery, and account safety.</p>
+                  <span className="text-xs font-bold text-[#7c3aed] tracking-wider uppercase">ACCOUNT SETTINGS</span>
+                  <h1 className="text-3xl font-extrabold text-[#1e293b] mt-1">Preferences & Privacy</h1>
                 </div>
 
-                <div className="grid md:grid-cols-2 gap-6">
-                  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <h3 className="font-bold text-base text-[#1e293b]">Privacy</h3>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-700">Show gender on eligible match cards</span>
-                      <input type="checkbox" checked={showGenderInMatches} onChange={e => setShowGenderInMatches(e.target.checked)} className="w-4 h-4 text-[#7c3aed]" />
+                <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm space-y-6">
+                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
+                    <div>
+                      <p className="text-sm font-bold text-[#1e293b]">Show gender in match cards</p>
+                      <p className="text-xs text-slate-500">Allow your verified gender to be visible to verified matches.</p>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-700">Allow new match invitations</span>
-                      <input type="checkbox" checked={allowMatchInvitations} onChange={e => setAllowMatchInvitations(e.target.checked)} className="w-4 h-4 text-[#7c3aed]" />
-                    </div>
+                    <input type="checkbox" checked={showGenderInMatches} onChange={e => setShowGenderInMatches(e.target.checked)} className="w-5 h-5 accent-[#7c3aed]" />
                   </div>
 
-                  <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <h3 className="font-bold text-base text-[#1e293b]">Notifications</h3>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-700">New high-compatibility matches</span>
-                      <input type="checkbox" checked={notifyMatches} onChange={e => setNotifyMatches(e.target.checked)} className="w-4 h-4 text-[#7c3aed]" />
+                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
+                    <div>
+                      <p className="text-sm font-bold text-[#1e293b]">Allow match invitations</p>
+                      <p className="text-xs text-slate-500">Let high-compatibility students message you directly.</p>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-700">New messages</span>
-                      <input type="checkbox" checked={notifyMessages} onChange={e => setNotifyMessages(e.target.checked)} className="w-4 h-4 text-[#7c3aed]" />
+                    <input type="checkbox" checked={allowMatchInvitations} onChange={e => setAllowMatchInvitations(e.target.checked)} className="w-5 h-5 accent-[#7c3aed]" />
+                  </div>
+
+                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
+                    <div>
+                      <p className="text-sm font-bold text-[#1e293b]">Email notifications for new matches</p>
+                      <p className="text-xs text-slate-500">Receive weekly digests when a new student matches above 80%.</p>
                     </div>
+                    <input type="checkbox" checked={notifyMatches} onChange={e => setNotifyMatches(e.target.checked)} className="w-5 h-5 accent-[#7c3aed]" />
+                  </div>
+
+                  <div className="flex items-center justify-between py-3">
+                    <div>
+                      <p className="text-sm font-bold text-[#1e293b]">Email notifications for messages</p>
+                      <p className="text-xs text-slate-500">Get notified when a roommate sends you a chat message.</p>
+                    </div>
+                    <input type="checkbox" checked={notifyMessages} onChange={e => setNotifyMessages(e.target.checked)} className="w-5 h-5 accent-[#7c3aed]" />
                   </div>
                 </div>
               </div>
@@ -643,35 +986,35 @@ export default function App() {
     );
   }
 
+  // ---------------- HOME / LANDING VIEW ----------------
   return (
     <div className="min-h-screen bg-white text-slate-800 flex flex-col">
       {/* Navigation */}
       <nav className="flex justify-between items-center px-8 py-4 border-b border-gray-100 bg-white sticky top-0 z-50">
         <div className="flex items-center space-x-8">
           <div className="flex items-center space-x-2 cursor-pointer" onClick={() => setView('home')}>
-            <div className="w-8 h-8 bg-indigo-600 text-white font-bold rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-[#7c3aed] text-white font-bold rounded-lg flex items-center justify-center text-lg">
               <Home className="w-5 h-5 text-white" />
             </div>
-            <span className="font-bold text-xl text-slate-900 tracking-tight">RoomMatch</span>
+            <span className="font-bold text-xl text-slate-900">RoomMatch</span>
           </div>
 
-          {/* Navigation Links */}
           <div className="hidden md:flex items-center space-x-6">
-            <button onClick={() => scrollToSection('how-it-works')} className="text-gray-600 hover:text-navy font-medium text-sm transition">
+            <button onClick={() => scrollToSection('how-it-works')} className="text-gray-600 hover:text-slate-900 font-medium text-sm transition">
               How it works
             </button>
-            <button onClick={() => scrollToSection('features')} className="text-gray-600 hover:text-navy font-medium text-sm transition">
+            <button onClick={() => scrollToSection('features')} className="text-gray-600 hover:text-slate-900 font-medium text-sm transition">
               Features
             </button>
-            <button onClick={() => scrollToSection('privacy')} className="text-gray-600 hover:text-navy font-medium text-sm transition">
+            <button onClick={() => scrollToSection('privacy')} className="text-gray-600 hover:text-slate-900 font-medium text-sm transition">
               Privacy
             </button>
           </div>
         </div>
 
         <div className="space-x-4">
-          <button onClick={() => setView('login')} className="px-4 py-2 text-navy font-medium hover:text-purple transition">Sign in</button>
-          <button onClick={() => setView('register')} className="px-4 py-2 bg-navy text-white rounded-xl hover:opacity-90 transition">Get started</button>
+          <button onClick={() => setView('login')} className="px-4 py-2 text-slate-900 font-medium hover:text-[#7c3aed] transition">Sign in</button>
+          <button onClick={() => setView('register')} className="px-4 py-2 bg-slate-900 text-white rounded-xl hover:opacity-90 transition">Get started</button>
         </div>
       </nav>
 
@@ -681,25 +1024,24 @@ export default function App() {
           {/* Hero Section */}
           <div className="py-16 px-6 max-w-6xl mx-auto grid md:grid-cols-2 gap-12 items-center">
             <div className="text-left">
-              <h1 className="text-5xl font-extrabold text-navy leading-tight mb-6">
+              <h1 className="text-5xl font-extrabold text-slate-900 leading-tight mb-6">
                 Find a roommate whose routine fits yours.
               </h1>
               <p className="text-lg text-gray-600 mb-8 leading-relaxed">
                 RoomMatch compares sleep schedules, cleanliness habits, study routines, and accommodation preferences to find your ideal university roommate.
               </p>
               <div className="flex items-center space-x-4">
-                <button onClick={() => setView('register')} className="bg-purple text-white px-8 py-4 rounded-xl font-semibold shadow-lg hover:opacity-90 transition">
+                <button onClick={() => setView('register')} className="bg-[#7c3aed] text-white px-8 py-4 rounded-xl font-semibold shadow-lg hover:opacity-90 transition">
                   Create student account
                 </button>
-                <button onClick={() => scrollToSection('how-it-works')} className="px-6 py-4 border border-gray-200 text-navy rounded-xl font-semibold hover:bg-gray-50 transition">
+                <button onClick={() => scrollToSection('how-it-works')} className="px-6 py-4 border border-gray-200 text-slate-900 rounded-xl font-semibold hover:bg-gray-50 transition">
                   See how it works
                 </button>
               </div>
             </div>
 
-            {/* Visual Illustration Card */}
             <div className="relative">
-              <div className="absolute -top-4 -left-4 w-72 h-72 bg-purple/10 rounded-full blur-3xl -z-10"></div>
+              <div className="absolute -top-4 -left-4 w-72 h-72 bg-[#7c3aed]/10 rounded-full blur-3xl -z-10"></div>
               <div className="bg-white p-3 rounded-3xl border border-gray-100 shadow-xl">
                 <img 
                   src="https://images.unsplash.com/photo-1522202176988-66273c2fd55f?auto=format&fit=crop&w=800&q=80" 
@@ -714,26 +1056,32 @@ export default function App() {
           <div id="features" className="bg-slate-50 py-16 px-6">
             <div className="max-w-6xl mx-auto">
               <div className="text-center mb-12">
-                <h2 className="text-3xl font-bold text-navy">Smart Compatibility Matching</h2>
+                <h2 className="text-3xl font-bold text-slate-900">Smart Compatibility Matching</h2>
                 <p className="text-gray-600 mt-2">Designed around actual daily lifestyle habits rather than random guessing.</p>
               </div>
 
               <div className="grid md:grid-cols-3 gap-8">
                 <div className="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm text-left">
-                  <div className="w-12 h-12 bg-purple/10 text-purple rounded-xl flex items-center justify-center font-bold text-2xl mb-4">🌙</div>
-                  <h3 className="text-xl font-bold text-navy mb-2">Sleep Schedules</h3>
+                  <div className="w-12 h-12 bg-[#7c3aed]/10 text-[#7c3aed] rounded-xl flex items-center justify-center font-bold text-2xl mb-4">
+                    <Sparkles className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-xl font-bold text-slate-900 mb-2">Sleep Schedules</h3>
                   <p className="text-gray-600 text-sm">Match with early risers or night owls so your sleep routines never clash.</p>
                 </div>
 
                 <div className="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm text-left">
-                  <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-xl flex items-center justify-center font-bold text-2xl mb-4">✨</div>
-                  <h3 className="text-xl font-bold text-navy mb-2">Cleanliness & Habits</h3>
+                  <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-xl flex items-center justify-center font-bold text-2xl mb-4">
+                    <CheckCircle2 className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-xl font-bold text-slate-900 mb-2">Cleanliness & Habits</h3>
                   <p className="text-gray-600 text-sm">Align on room tidiness, guest rules, and study volume preferences.</p>
                 </div>
 
                 <div className="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm text-left">
-                  <div className="w-12 h-12 bg-green-100 text-green-600 rounded-xl flex items-center justify-center font-bold text-2xl mb-4">🏠</div>
-                  <h3 className="text-xl font-bold text-navy mb-2">Accommodation Needs</h3>
+                  <div className="w-12 h-12 bg-green-100 text-green-600 rounded-xl flex items-center justify-center font-bold text-2xl mb-4">
+                    <Home className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-xl font-bold text-slate-900 mb-2">Accommodation Needs</h3>
                   <p className="text-gray-600 text-sm">Filter by budget range, location preferences, and single or shared room options.</p>
                 </div>
               </div>
@@ -742,21 +1090,21 @@ export default function App() {
 
           {/* How It Works Section */}
           <div id="how-it-works" className="py-16 px-6 max-w-6xl mx-auto text-center">
-            <h2 className="text-3xl font-bold text-navy mb-12">How RoomMatch Works</h2>
+            <h2 className="text-3xl font-bold text-slate-900 mb-12">How RoomMatch Works</h2>
             <div className="grid md:grid-cols-3 gap-8">
               <div className="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm space-y-4 text-center">
-                <div className="w-12 h-12 bg-navy text-white font-bold rounded-full flex items-center justify-center mx-auto text-lg">1</div>
-                <h3 className="font-bold text-lg text-navy">Create Your Account</h3>
-                <p className="text-sm text-gray-600">Register with your university email to join your school's verified network.</p>
+                <div className="w-12 h-12 bg-slate-900 text-white font-bold rounded-full flex items-center justify-center mx-auto text-lg">1</div>
+                <h3 className="font-bold text-lg text-slate-900">Create Your Account</h3>
+                <p className="text-sm text-gray-600">Register with your student username to join your university network.</p>
               </div>
               <div className="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm space-y-4 text-center">
-                <div className="w-12 h-12 bg-purple text-white font-bold rounded-full flex items-center justify-center mx-auto text-lg">2</div>
-                <h3 className="font-bold text-lg text-navy">Complete Lifestyle Questionnaire</h3>
+                <div className="w-12 h-12 bg-[#7c3aed] text-white font-bold rounded-full flex items-center justify-center mx-auto text-lg">2</div>
+                <h3 className="font-bold text-lg text-slate-900">Complete Lifestyle Questionnaire</h3>
                 <p className="text-sm text-gray-600">Answer key questions about your sleep, study habits, tidiness, and budget.</p>
               </div>
               <div className="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm space-y-4 text-center">
-                <div className="w-12 h-12 bg-navy text-white font-bold rounded-full flex items-center justify-center mx-auto text-lg">3</div>
-                <h3 className="font-bold text-lg text-navy">Get Compatible Matches</h3>
+                <div className="w-12 h-12 bg-slate-900 text-white font-bold rounded-full flex items-center justify-center mx-auto text-lg">3</div>
+                <h3 className="font-bold text-lg text-slate-900">Get Compatible Matches</h3>
                 <p className="text-sm text-gray-600">Review clustered profiles ordered by lifestyle similarity and connect safely.</p>
               </div>
             </div>
@@ -765,8 +1113,10 @@ export default function App() {
           {/* Privacy Section */}
           <div id="privacy" className="bg-slate-50 py-16 px-6">
             <div className="max-w-4xl mx-auto text-center">
-              <div className="w-12 h-12 bg-purple/10 text-purple rounded-2xl flex items-center justify-center font-bold text-2xl mx-auto mb-4">🛡️</div>
-              <h2 className="text-3xl font-bold text-navy mb-4">Privacy & Verification First</h2>
+              <div className="w-12 h-12 bg-[#7c3aed]/10 text-[#7c3aed] rounded-2xl flex items-center justify-center font-bold text-2xl mx-auto mb-4">
+                <UserIcon className="w-6 h-6" />
+              </div>
+              <h2 className="text-3xl font-bold text-slate-900 mb-4">Privacy & Verification First</h2>
               <p className="text-gray-600 leading-relaxed max-w-2xl mx-auto">
                 RoomMatch only grants access to verified students at your institution.
               </p>
@@ -775,33 +1125,34 @@ export default function App() {
         </div>
       )}
 
+      {/* REGISTER VIEW */}
       {view === 'register' && (
-        <div className="max-w-lg mx-auto my-12 p-8 bg-white rounded-2xl border border-gray-100 shadow-sm w-full">
+        <div className="max-w-lg mx-auto my-12 p-8 bg-white rounded-2xl border border-gray-100 shadow-sm w-full text-left">
           <div className="mb-4">
-            <button onClick={() => setView('home')} className="text-sm text-purple font-semibold hover:underline">
+            <button onClick={() => setView('home')} className="text-sm text-[#7c3aed] font-semibold hover:underline">
               ← Back to home
             </button>
           </div>
-          <h2 className="text-2xl font-bold text-navy mb-6">Create your account</h2>
-          <form onSubmit={handleRegister} className="space-y-4 text-left">
+          <h2 className="text-2xl font-bold text-slate-900 mb-6">Create your student account</h2>
+          <form onSubmit={handleRegister} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-              <input type="text" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple/50" />
+              <input type="text" placeholder="e.g. daniella" value={username} onChange={e => setUsername(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
-              <input type="text" placeholder="Your full name" value={fullName} onChange={e => setFullName(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple/50" />
+              <input type="text" placeholder="Your full name" value={fullName} onChange={e => setFullName(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">University or institution</label>
-              <input type="text" placeholder="University or institution" value={university} onChange={e => setUniversity(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple/50" />
+              <input type="text" value={university} onChange={e => setUniversity(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Gender</label>
-              <select value={gender} onChange={e => setGender(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-purple/50">
+              <select value={gender} onChange={e => setGender(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50">
                 <option value="">Select Gender</option>
                 <option value="Female">Female</option>
                 <option value="Male">Male</option>
@@ -811,46 +1162,47 @@ export default function App() {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-              <input type="password" placeholder="At least 6 characters" value={password} onChange={e => setPassword(e.target.value)} minLength={6} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple/50" />
+              <input type="password" placeholder="At least 6 characters" value={password} onChange={e => setPassword(e.target.value)} minLength={6} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Confirm password</label>
-              <input type="password" placeholder="Repeat password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple/50" />
+              <input type="password" placeholder="Repeat password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
-            <button type="submit" className="w-full bg-purple text-white p-4 rounded-xl font-semibold shadow-md hover:opacity-90 transition mt-2">
+            <button type="submit" className="w-full bg-[#7c3aed] text-white p-4 rounded-xl font-semibold shadow-md hover:opacity-90 transition mt-2">
               Create account &rarr;
             </button>
           </form>
-          <p className="mt-4 text-center text-sm text-gray-600">Already registered? <button onClick={() => setView('login')} className="text-purple font-semibold hover:underline">Log in</button></p>
+          <p className="mt-4 text-center text-sm text-gray-600">Already registered? <button onClick={() => setView('login')} className="text-[#7c3aed] font-semibold hover:underline">Log in</button></p>
         </div>
       )}
 
+      {/* LOGIN VIEW (BY USERNAME OR EMAIL) */}
       {view === 'login' && (
-        <div className="max-w-md mx-auto my-12 p-8 bg-white rounded-2xl border border-gray-100 shadow-sm w-full">
+        <div className="max-w-md mx-auto my-12 p-8 bg-white rounded-2xl border border-gray-100 shadow-sm w-full text-left">
           <div className="mb-4">
-            <button onClick={() => setView('home')} className="text-sm text-purple font-semibold hover:underline">
+            <button onClick={() => setView('home')} className="text-sm text-[#7c3aed] font-semibold hover:underline">
               ← Back to home
             </button>
           </div>
-          <h2 className="text-2xl font-bold text-navy mb-6">Welcome back</h2>
-          <form onSubmit={handleLogin} className="space-y-4 text-left">
+          <h2 className="text-2xl font-bold text-slate-900 mb-6">Welcome back</h2>
+          <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-              <input type="text" placeholder="Username" value={loginInput} onChange={e => setLoginInput(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple/50" />
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username or email</label>
+              <input type="text" placeholder="e.g. daniella" value={loginInput} onChange={e => setLoginInput(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-              <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple/50" />
+              <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
-            <button type="submit" className="w-full bg-navy text-white p-4 rounded-xl font-semibold shadow-md hover:opacity-90 transition mt-2">
+            <button type="submit" className="w-full bg-slate-900 text-white p-4 rounded-xl font-semibold shadow-md hover:opacity-90 transition mt-2">
               Sign in
             </button>
           </form>
-          <p className="mt-4 text-center text-sm text-gray-600">New to RoomMatch? <button onClick={() => setView('register')} className="text-purple font-semibold hover:underline">Create an account</button></p>
+          <p className="mt-4 text-center text-sm text-gray-600">New to RoomMatch? <button onClick={() => setView('register')} className="text-[#7c3aed] font-semibold hover:underline">Create an account</button></p>
         </div>
       )}
 
