@@ -63,32 +63,46 @@ export default function App() {
   const [notifyMatches, setNotifyMatches] = useState(true);
   const [notifyMessages, setNotifyMessages] = useState(true);
 
-  // Chat Messaging States
-  const [messages, setMessages] = useState<any[]>([
-    { id: '1', sender: 'Amina', text: 'Hi! I noticed we’re both looking near North Campus.', time: '10:24', unread: true },
-    { id: '2', sender: 'Amina', text: 'Your preference for a quiet study space stood out too.', time: '10:27', unread: true }
-  ]);
+  // Real-time Conversation Requests & Chat Messaging States
+  const [conversationRequests, setConversationRequests] = useState<any[]>([]);
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  const [chatSearchQuery, setChatSearchQuery] = useState('');
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [toastNotice, setToastNotice] = useState<{ title: string; type: 'success' | 'error' } | null>(null);
+  const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [otherProfiles, setOtherProfiles] = useState<any[]>([]);
   const [loadingMatches, setLoadingMatches] = useState<boolean>(false);
+
+  const triggerToast = (title: string, type: 'success' | 'error' = 'success') => {
+    setToastNotice({ title, type });
+    setTimeout(() => setToastNotice(null), 4000);
+  };
 
   // Real Compatibility Scoring & Gender Eligibility Calculation
   const potentialMatchesList = useMemo(() => {
     return otherProfiles
       .filter((other) => {
-        // Apply gender preference eligibility filter first (does not affect score)
-        const userPref = (preferredGender || 'No preference').toLowerCase();
-        const otherGender = (other.gender || '').toLowerCase();
-        const otherPref = (other.preferred_roommate_gender || 'No preference').toLowerCase();
-        const myGender = (gender || '').toLowerCase();
+        // 1. Apply gender preference eligibility filter first (does not affect score)
+        const userPref = (preferredGender || 'No preference').toLowerCase().trim();
+        const otherGender = (other.gender || '').toLowerCase().trim();
+        const otherPref = (other.preferred_roommate_gender || 'No preference').toLowerCase().trim();
+        const myGender = (gender || '').toLowerCase().trim();
 
-        const matchesMyPref = userPref === 'no preference' || userPref === '' || userPref === otherGender;
-        const matchesTheirPref = otherPref === 'no preference' || otherPref === '' || otherPref === myGender;
+        const matchesMyPref =
+          userPref === 'no preference' ||
+          userPref === '' ||
+          (otherGender !== '' && userPref === otherGender);
+
+        const matchesTheirPref =
+          otherPref === 'no preference' ||
+          otherPref === '' ||
+          (myGender !== '' && otherPref === myGender);
 
         return matchesMyPref && matchesTheirPref;
       })
       .map((other) => {
-        // Weighted scoring across all 11 lifestyle & budget preferences
+        // Extract all 11 lifestyle attributes + accommodation & location
         const otherSleep = other.sleep_schedule || other.sleeping_schedule || '';
         const otherWake = other.wake_up_time || '';
         const otherSmoking = other.smoking_preference || other.smoking || '';
@@ -99,7 +113,18 @@ export default function App() {
         const otherFood = other.food_preference || '';
         const otherPets = other.pet_preference || other.pets || '';
         const otherStudy = other.study_habits || '';
-        const otherBudgetCat = other.budget_category || '';
+        
+        // Derive other student's budget tier dynamically if budget_category isn't stored
+        let otherBudgetCat = other.budget_category || '';
+        if (!otherBudgetCat && (other.min_budget || other.max_budget || other.budget)) {
+          const otherMid =
+            other.min_budget && other.max_budget
+              ? (Number(other.min_budget) + Number(other.max_budget)) / 2
+              : Number(other.budget || other.max_budget || other.min_budget);
+          if (otherMid <= 400) otherBudgetCat = 'low';
+          else if (otherMid <= 800) otherBudgetCat = 'medium';
+          else otherBudgetCat = 'high';
+        }
 
         const comparisons = [
           { label: 'sleep schedule', mine: sleepSchedule, theirs: otherSleep, weight: 12 },
@@ -112,34 +137,74 @@ export default function App() {
           { label: 'food preference', mine: foodPreference, theirs: otherFood, weight: 6 },
           { label: 'pets', mine: pets, theirs: otherPets, weight: 8 },
           { label: 'study habits', mine: studyHabits, theirs: otherStudy, weight: 10 },
-          { label: 'budget range', mine: budgetCategory, theirs: otherBudgetCat, weight: 6 }
+          { label: 'budget tier', mine: budgetCategory, theirs: otherBudgetCat, weight: 6 },
+          { label: 'accommodation type', mine: accommodationType, theirs: other.accommodation_type || '', weight: 5 },
+          { label: 'campus location', mine: locationCampus, theirs: other.location || '', weight: 5 }
         ];
 
-        let totalScore = 0;
-        const traits: string[] = [];
+        let earnedWeight = 0;
+        let possibleWeight = 0;
+        const matchedTraits: string[] = [];
+        const partialTraits: string[] = [];
+        const mismatchedTraits: string[] = [];
+        let hasUserFilledProfile = false;
+        let hasOtherFilledProfile = false;
 
         comparisons.forEach((item) => {
-          if (item.mine && item.theirs) {
-            if (item.mine.toLowerCase() === item.theirs.toLowerCase()) {
-              totalScore += item.weight;
-              traits.push(item.label);
+          const mineVal = String(item.mine || '').toLowerCase().trim();
+          const theirsVal = String(item.theirs || '').toLowerCase().trim();
+
+          if (mineVal) hasUserFilledProfile = true;
+          if (theirsVal) hasOtherFilledProfile = true;
+
+          // Only evaluate criteria where both students have provided data
+          if (mineVal && theirsVal) {
+            possibleWeight += item.weight;
+
+            if (mineVal === theirsVal || (item.label === 'campus location' && (mineVal.includes(theirsVal) || theirsVal.includes(mineVal)))) {
+              earnedWeight += item.weight;
+              matchedTraits.push(item.label);
             } else if (
-              (item.mine.toLowerCase() === 'flexible' || item.theirs.toLowerCase() === 'flexible') ||
-              (item.mine.toLowerCase() === 'no preference' || item.theirs.toLowerCase() === 'no preference')
+              mineVal === 'flexible' ||
+              theirsVal === 'flexible' ||
+              mineVal === 'no preference' ||
+              theirsVal === 'no preference' ||
+              (item.label === 'pets' &&
+                ((mineVal === 'has pets' && theirsVal === 'okay with pets') ||
+                  (theirsVal === 'has pets' && mineVal === 'okay with pets') ||
+                  (mineVal === 'no pets' && theirsVal === 'okay with pets') ||
+                  (theirsVal === 'no pets' && mineVal === 'okay with pets'))) ||
+              (item.label === 'cleanliness' &&
+                ((mineVal === 'high' && theirsVal === 'medium') ||
+                  (theirsVal === 'high' && mineVal === 'medium'))) ||
+              (item.label === 'noise level' &&
+                ((mineVal === 'low' && theirsVal === 'medium') ||
+                  (theirsVal === 'low' && mineVal === 'medium')))
             ) {
-              totalScore += Math.round(item.weight * 0.6);
+              earnedWeight += item.weight * 0.65;
+              partialTraits.push(item.label);
+            } else {
+              mismatchedTraits.push(item.label);
             }
           }
         });
 
-        const finalScore = Math.min(100, Math.max(25, totalScore));
-        let tag = 'Moderate';
-        if (finalScore >= 85) tag = 'Very high';
-        else if (finalScore >= 70) tag = 'High';
+        // Calculate accurate normalized percentage
+        const isIncomplete = !hasUserFilledProfile || !hasOtherFilledProfile || possibleWeight === 0;
+        const finalScore = isIncomplete ? 0 : Math.round((earnedWeight / possibleWeight) * 100);
+
+        let tag = 'Incomplete';
+        if (!isIncomplete) {
+          if (finalScore >= 85) tag = 'Very high';
+          else if (finalScore >= 70) tag = 'High';
+          else if (finalScore >= 50) tag = 'Moderate';
+          else tag = 'Low';
+        }
 
         const displayName = other.full_name || other.username || 'Student';
         const initials = displayName
           .split(' ')
+          .filter(Boolean)
           .map((n: string) => n[0])
           .join('')
           .toUpperCase()
@@ -151,12 +216,23 @@ export default function App() {
           initials: initials || 'ST',
           university: other.university || university,
           location: other.location || 'Campus Area',
+          accommodationType: other.accommodation_type || 'Not specified',
+          budgetCategory: otherBudgetCat || 'Not specified',
           score: finalScore,
+          isIncomplete,
+          hasUserFilledProfile,
+          hasOtherFilledProfile,
           tag,
-          traits: traits.length > 0 ? traits : ['university network']
+          matchedTraits,
+          partialTraits,
+          mismatchedTraits,
+          rawProfile: other
         };
       })
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => {
+        if (a.isIncomplete !== b.isIncomplete) return a.isIncomplete ? 1 : -1;
+        return b.score - a.score;
+      });
   }, [
     otherProfiles,
     preferredGender,
@@ -172,6 +248,8 @@ export default function App() {
     pets,
     studyHabits,
     budgetCategory,
+    accommodationType,
+    locationCampus,
     university
   ]);
 
@@ -231,9 +309,98 @@ export default function App() {
     return potentialMatchesList.filter(m => m.score >= 85).length;
   }, [potentialMatchesList]);
 
+  // Incoming pending chat requests for the current user
+  const incomingPendingRequests = useMemo(() => {
+    if (!user) return [];
+    return conversationRequests.filter(
+      (req) => req.receiver_id === user.id && req.status === 'pending'
+    );
+  }, [conversationRequests, user]);
+
+  // Active & pending conversations visible in the Messages tab
+  const userConversations = useMemo(() => {
+    if (!user) return [];
+    return conversationRequests
+      .filter((req) => req.status === 'accepted' || req.status === 'pending')
+      .map((req) => {
+        const partnerId = req.sender_id === user.id ? req.receiver_id : req.sender_id;
+        const partnerProfile = otherProfiles.find((p) => p.id === partnerId);
+        const matchObj = potentialMatchesList.find((m) => m.id === partnerId);
+        const partnerName = partnerProfile?.full_name || partnerProfile?.username || 'Student';
+        const initials = partnerName
+          .split(' ')
+          .filter(Boolean)
+          .map((n: string) => n[0])
+          .join('')
+          .toUpperCase()
+          .slice(0, 2);
+
+        const threadMsgs = messages.filter((m) => m.request_id === req.id);
+        const lastMsg = threadMsgs[threadMsgs.length - 1];
+        const unreadCount = threadMsgs.filter(
+          (m) => m.receiver_id === user.id && !m.is_read
+        ).length;
+
+        return {
+          ...req,
+          partnerId,
+          partnerName,
+          initials: initials || 'ST',
+          score: matchObj?.score ?? null,
+          isIncoming: req.receiver_id === user.id,
+          lastMessageText: lastMsg
+            ? lastMsg.content
+            : req.status === 'pending'
+            ? req.receiver_id === user.id
+              ? 'Sent you a chat request'
+              : 'Waiting for acceptance...'
+            : 'Conversation accepted — say hello!',
+          lastMessageTime: lastMsg
+            ? new Date(lastMsg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : '',
+          unreadCount
+        };
+      });
+  }, [conversationRequests, user, otherProfiles, potentialMatchesList, messages]);
+
   const unreadMessagesCount = useMemo(() => {
-    return messages.filter(m => m.unread).length;
-  }, [messages]);
+    if (!user) return 0;
+    return messages.filter((m) => m.receiver_id === user.id && !m.is_read).length;
+  }, [messages, user]);
+
+  const unreadConversationCount = useMemo(() => {
+    return userConversations.filter((c) => c.unreadCount > 0).length;
+  }, [userConversations]);
+
+  const totalNotificationCount = incomingPendingRequests.length + unreadMessagesCount;
+
+  // Fetch conversation requests and messages from Supabase
+  const fetchMessagingData = async (currentUserId: string) => {
+    const { data: reqData } = await supabase
+      .from('conversation_requests')
+      .select('*')
+      .or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`)
+      .order('updated_at', { ascending: false });
+
+    if (reqData) {
+      setConversationRequests(reqData);
+      setSelectedRequestId((prev) => {
+        if (prev && reqData.some((r) => r.id === prev)) return prev;
+        const firstAccepted = reqData.find((r) => r.status === 'accepted') || reqData[0];
+        return firstAccepted ? firstAccepted.id : null;
+      });
+    }
+
+    const { data: msgData } = await supabase
+      .from('messages')
+      .select('*')
+      .or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`)
+      .order('created_at', { ascending: true });
+
+    if (msgData) {
+      setMessages(msgData);
+    }
+  };
 
   // Check active session on load
   useEffect(() => {
@@ -241,7 +408,8 @@ export default function App() {
       if (session?.user) {
         setUser(session.user);
         setView('dashboard');
-        fetchUserProfile(session.user.id);
+        fetchUserProfile(session.user.id, session.user);
+        fetchMessagingData(session.user.id);
       }
     });
 
@@ -249,7 +417,8 @@ export default function App() {
       if (session?.user) {
         setUser(session.user);
         setView('dashboard');
-        fetchUserProfile(session.user.id);
+        fetchUserProfile(session.user.id, session.user);
+        fetchMessagingData(session.user.id);
       } else {
         setUser(null);
         setView('home');
@@ -259,42 +428,73 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Fetch student profile & all other student profiles from Supabase
-  const fetchUserProfile = async (userId: string) => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
+  // Subscribe to real-time updates for conversation requests & messages
+  useEffect(() => {
+    if (!user) return;
 
-    if (data && !error) {
-      setFullName(data.full_name || '');
-      setUsername(data.username || '');
-      setUniversity(data.university || 'USIU-Africa');
-      setGender(data.gender || '');
-      setPreferredGender(data.preferred_roommate_gender || '');
-      setAccommodationType(data.accommodation_type || '');
-      setLocationCampus(data.location || '');
-      setMinBudget(data.min_budget || 0);
-      setMaxBudget(data.max_budget || data.budget || 0);
-      setSleepSchedule(data.sleep_schedule || data.sleeping_schedule || '');
-      setWakeUpTime(data.wake_up_time || '');
-      setSmoking(data.smoking_preference || '');
-      setDrinking(data.drinking_preference || '');
-      setCleanliness(data.cleanliness_level || data.cleanliness || '');
-      setNoiseLevel(data.noise_level || '');
-      setGuests(data.guest_preference || '');
-      setFoodPreference(data.food_preference || '');
-      setPets(data.pet_preference || '');
-      setStudyHabits(data.study_habits || '');
+    const channel = supabase
+      .channel(`roommatch-chat-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'conversation_requests' },
+        () => {
+          fetchMessagingData(user.id);
+          refreshAllProfiles(user.id);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        () => {
+          fetchMessagingData(user.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
+  // Mark messages as read when viewing an accepted conversation
+  useEffect(() => {
+    if (!user || activeTab !== 'messages' || !selectedRequestId) return;
+    const unreadInActive = messages.filter(
+      (m) => m.request_id === selectedRequestId && m.receiver_id === user.id && !m.is_read
+    );
+    if (unreadInActive.length > 0) {
+      supabase
+        .from('messages')
+        .update({ is_read: true })
+        .eq('request_id', selectedRequestId)
+        .eq('receiver_id', user.id)
+        .eq('is_read', false)
+        .then(() => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.request_id === selectedRequestId && m.receiver_id === user.id
+                ? { ...m, is_read: true }
+                : m
+            )
+          );
+        });
     }
+  }, [activeTab, selectedRequestId, messages, user]);
 
-    // Fetch all other real student profiles for dynamic matching
+  // Refresh other student profiles whenever switching to Matches tab
+  useEffect(() => {
+    if (user && (activeTab === 'matches' || activeTab === 'overview' || activeTab === 'messages')) {
+      refreshAllProfiles(user.id);
+      fetchMessagingData(user.id);
+    }
+  }, [activeTab, user]);
+
+  const refreshAllProfiles = async (currentUserId: string) => {
     setLoadingMatches(true);
     const { data: allUsersData, error: allUsersError } = await supabase
       .from('profiles')
       .select('*')
-      .neq('id', userId);
+      .neq('id', currentUserId);
 
     if (allUsersData && !allUsersError) {
       setOtherProfiles(allUsersData);
@@ -346,6 +546,17 @@ export default function App() {
       }
 
       if (data.user) {
+        // Also ensure profile row is inserted immediately
+        await supabase.from('profiles').upsert([
+          {
+            id: data.user.id,
+            username: cleanUsername,
+            full_name: fullName,
+            email: targetEmail,
+            university: university || 'USIU-Africa',
+            gender: gender
+          }
+        ]);
         alert("Account created successfully! You can now log in using your username.");
         setView('login');
       }
@@ -354,12 +565,66 @@ export default function App() {
     }
   };
 
+  // Fetch student profile from Supabase
+  const fetchUserProfile = async (userId: string, authUser?: User) => {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (data && !error) {
+      setFullName(data.full_name || '');
+      setUsername(data.username || '');
+      setUniversity(data.university || 'USIU-Africa');
+      setGender(data.gender || '');
+      setPreferredGender(data.preferred_roommate_gender || '');
+      setAccommodationType(data.accommodation_type || '');
+      setLocationCampus(data.location || '');
+      setMinBudget(data.min_budget || 0);
+      setMaxBudget(data.max_budget || data.budget || 0);
+      setSleepSchedule(data.sleep_schedule || data.sleeping_schedule || '');
+      setWakeUpTime(data.wake_up_time || '');
+      setSmoking(data.smoking_preference || '');
+      setDrinking(data.drinking_preference || '');
+      setCleanliness(data.cleanliness_level || data.cleanliness || '');
+      setNoiseLevel(data.noise_level || '');
+      setGuests(data.guest_preference || '');
+      setFoodPreference(data.food_preference || '');
+      setPets(data.pet_preference || '');
+      setStudyHabits(data.study_habits || '');
+    } else if (authUser) {
+      const meta = authUser.user_metadata || {};
+      const fallbackUsername = meta.username || (authUser.email ? authUser.email.split('@')[0] : '');
+      const fallbackFullName = meta.full_name || '';
+      const fallbackUni = meta.university || 'USIU-Africa';
+      const fallbackGender = meta.gender || '';
+
+      setUsername(fallbackUsername);
+      setFullName(fallbackFullName);
+      setUniversity(fallbackUni);
+      setGender(fallbackGender);
+
+      await supabase.from('profiles').upsert([
+        {
+          id: userId,
+          username: fallbackUsername,
+          full_name: fallbackFullName,
+          email: authUser.email,
+          university: fallbackUni,
+          gender: fallbackGender
+        }
+      ]);
+    }
+
+    await refreshAllProfiles(userId);
+  };
+
   // Handle Login using Username or Email
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     let targetEmail = loginInput.trim();
-    
-    // If username supplied without '@', map to internal domain format
+
     if (!targetEmail.includes('@')) {
       targetEmail = `${targetEmail.toLowerCase()}@usiu.ac.ke`;
     }
@@ -377,10 +642,34 @@ export default function App() {
     }
   };
 
-  // Handle Logout
+  // Handle Logout & reset cached profile state
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setUser(null);
+    setFullName('');
+    setUsername('');
+    setGender('');
+    setPreferredGender('');
+    setAccommodationType('');
+    setLocationCampus('');
+    setMinBudget(0);
+    setMaxBudget(0);
+    setSleepSchedule('');
+    setWakeUpTime('');
+    setSmoking('');
+    setDrinking('');
+    setCleanliness('');
+    setNoiseLevel('');
+    setGuests('');
+    setFoodPreference('');
+    setPets('');
+    setStudyHabits('');
+    setOtherProfiles([]);
+    setConversationRequests([]);
+    setMessages([]);
+    setSelectedRequestId(null);
+    setShowNotifications(false);
+    setActiveTab('overview');
     setView('home');
   };
 
@@ -419,24 +708,125 @@ export default function App() {
     if (error) {
       alert("Failed to save preferences: " + error.message);
     } else {
-      alert("Preferences saved successfully!");
+      await refreshAllProfiles(user.id);
+      alert("Preferences saved! Your compatibility matches have been recalculated.");
     }
   };
 
-  // Chat Send Handler
-  const handleSendMessage = (e: React.FormEvent) => {
+  // Request a conversation with a potential match
+  const handleRequestConversation = async (targetUserId: string, targetName: string) => {
+    if (!user) return;
+
+    // Check if a request already exists in either direction
+    const existing = conversationRequests.find(
+      (r) =>
+        (r.sender_id === user.id && r.receiver_id === targetUserId) ||
+        (r.sender_id === targetUserId && r.receiver_id === user.id)
+    );
+
+    if (existing) {
+      setSelectedRequestId(existing.id);
+      setActiveTab('messages');
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('conversation_requests')
+      .insert([
+        {
+          sender_id: user.id,
+          receiver_id: targetUserId,
+          status: 'pending'
+        }
+      ])
+      .select()
+      .single();
+
+    if (error) {
+      triggerToast(`Could not send request: ${error.message}`, 'error');
+    } else if (data) {
+      setConversationRequests((prev) => [data, ...prev]);
+      setSelectedRequestId(data.id);
+      triggerToast(`Conversation request sent to ${targetName}!`, 'success');
+    }
+  };
+
+  // Accept or Decline an incoming conversation request
+  const handleRespondToRequest = async (requestId: string, decision: 'accepted' | 'declined') => {
+    if (!user) return;
+
+    const { error } = await supabase
+      .from('conversation_requests')
+      .update({ status: decision, updated_at: new Date().toISOString() })
+      .eq('id', requestId);
+
+    if (error) {
+      triggerToast(`Action failed: ${error.message}`, 'error');
+    } else {
+      setConversationRequests((prev) =>
+        prev.map((r) => (r.id === requestId ? { ...r, status: decision } : r))
+      );
+      if (decision === 'accepted') {
+        setSelectedRequestId(requestId);
+        setActiveTab('messages');
+        setShowNotifications(false);
+        triggerToast('Conversation request accepted! You can now chat.', 'success');
+      } else {
+        triggerToast('Conversation request declined.', 'success');
+      }
+    }
+  };
+
+  // Real-time Chat Send Handler (only works if request status is 'accepted')
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim()) return;
-    const now = new Date();
-    const timeStr = `${now.getHours()}:${now.getMinutes() < 10 ? '0' : ''}${now.getMinutes()}`;
-    setMessages(prev => [...prev, { id: Date.now().toString(), sender: 'Me', text: newMessage.trim(), time: timeStr, unread: false }]);
+    if (!newMessage.trim() || !user || !selectedRequestId) return;
+
+    const activeReq = conversationRequests.find((r) => r.id === selectedRequestId);
+    if (!activeReq || activeReq.status !== 'accepted') {
+      triggerToast('This conversation must be accepted before sending messages.', 'error');
+      return;
+    }
+
+    const receiverId = activeReq.sender_id === user.id ? activeReq.receiver_id : activeReq.sender_id;
+    const contentText = newMessage.trim();
     setNewMessage('');
+
+    const { data, error } = await supabase
+      .from('messages')
+      .insert([
+        {
+          request_id: selectedRequestId,
+          sender_id: user.id,
+          receiver_id: receiverId,
+          content: contentText,
+          is_read: false
+        }
+      ])
+      .select()
+      .single();
+
+    if (error) {
+      triggerToast(`Failed to send message: ${error.message}`, 'error');
+    } else if (data) {
+      setMessages((prev) => [...prev, data]);
+    }
   };
 
   // ---------------- STUDENT DASHBOARD VIEW ----------------
   if (view === 'dashboard' || user) {
     return (
-      <div className="min-h-screen bg-[#f8fafc] text-slate-800 flex font-sans">
+      <div className="min-h-screen bg-[#f8fafc] text-slate-800 flex font-sans relative">
+        {/* Toast Banner */}
+        {toastNotice && (
+          <div className={`fixed bottom-6 right-6 z-50 px-5 py-3.5 rounded-2xl shadow-xl text-xs font-semibold text-white flex items-center space-x-2 transition-all ${
+            toastNotice.type === 'error' ? 'bg-red-600' : 'bg-[#0f172a] border border-slate-700'
+          }`}>
+            <Sparkles className="w-4 h-4 text-[#7c3aed]" />
+            <span>{toastNotice.title}</span>
+          </div>
+        )}
+
         {/* Dark Sidebar Navigation */}
         <aside className="w-64 bg-[#0f172a] text-white flex flex-col justify-between p-6 shrink-0 min-h-screen">
           <div>
@@ -463,7 +853,6 @@ export default function App() {
               <button 
                 onClick={() => {
                   setActiveTab('messages');
-                  setMessages(prev => prev.map(m => ({ ...m, unread: false })));
                 }} 
                 className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'messages' ? 'bg-[#1e293b] text-white font-semibold' : 'text-slate-400 hover:text-white'}`}
               >
@@ -471,8 +860,10 @@ export default function App() {
                   <MessageSquare className="w-4 h-4 text-blue-400" />
                   <span>Messages</span>
                 </div>
-                {unreadMessagesCount > 0 && (
-                  <span className="bg-[#7c3aed] text-white text-xs px-2 py-0.5 rounded-full font-bold">{unreadMessagesCount}</span>
+                {(unreadMessagesCount + incomingPendingRequests.length) > 0 && (
+                  <span className="bg-[#7c3aed] text-white text-xs px-2 py-0.5 rounded-full font-bold">
+                    {unreadMessagesCount + incomingPendingRequests.length}
+                  </span>
                 )}
               </button>
 
@@ -514,10 +905,102 @@ export default function App() {
               <p className="text-xs text-slate-500">Spring housing cycle</p>
             </div>
             
-            <div className="flex items-center space-x-4">
-              <button className="w-9 h-9 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50">
-                <Bell className="w-4 h-4" />
-              </button>
+            <div className="flex items-center space-x-4 relative">
+              {/* Notification Bell with Live Counter & Interactive Dropdown */}
+              <div className="relative">
+                <button 
+                  onClick={() => setShowNotifications((prev) => !prev)}
+                  className="w-9 h-9 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 relative transition"
+                  title="Notifications"
+                >
+                  <Bell className="w-4 h-4" />
+                  {totalNotificationCount > 0 && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-[#7c3aed] text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                      {totalNotificationCount}
+                    </span>
+                  )}
+                </button>
+
+                {showNotifications && (
+                  <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-2xl border border-slate-200 shadow-2xl z-50 overflow-hidden text-left">
+                    <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+                      <span className="text-xs font-bold text-[#1e293b]">Notifications</span>
+                      <span className="text-[11px] font-semibold text-[#7c3aed]">
+                        {totalNotificationCount} new
+                      </span>
+                    </div>
+
+                    <div className="max-h-96 overflow-y-auto divide-y divide-slate-100">
+                      {incomingPendingRequests.length === 0 && unreadMessagesCount === 0 ? (
+                        <div className="p-6 text-center text-xs text-slate-400">
+                          No new conversation requests or unread messages.
+                        </div>
+                      ) : (
+                        <>
+                          {incomingPendingRequests.map((req) => {
+                            const sender = otherProfiles.find((p) => p.id === req.sender_id);
+                            const matchInfo = potentialMatchesList.find((m) => m.id === req.sender_id);
+                            const senderName = sender?.full_name || sender?.username || 'A student';
+                            return (
+                              <div key={req.id} className="p-4 space-y-3 bg-purple-50/30">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <p className="text-xs font-bold text-[#1e293b]">
+                                      {senderName} wants to start a conversation
+                                    </p>
+                                    <p className="text-[11px] text-slate-500 mt-0.5">
+                                      {matchInfo && !matchInfo.isIncomplete
+                                        ? `${matchInfo.score}% compatibility match • ${matchInfo.location}`
+                                        : 'Potential roommate match'}
+                                    </p>
+                                  </div>
+                                  <span className="text-[10px] font-bold text-[#7c3aed] bg-purple-100 px-2 py-0.5 rounded-full">
+                                    Request
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center space-x-2">
+                                  <button
+                                    onClick={() => handleRespondToRequest(req.id, 'accepted')}
+                                    className="flex-1 bg-[#7c3aed] text-white py-2 rounded-xl text-xs font-semibold hover:bg-[#6d28d9] transition"
+                                  >
+                                    Accept
+                                  </button>
+                                  <button
+                                    onClick={() => handleRespondToRequest(req.id, 'declined')}
+                                    className="flex-1 bg-white border border-slate-200 text-slate-700 py-2 rounded-xl text-xs font-semibold hover:bg-slate-50 transition"
+                                  >
+                                    Decline
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          {unreadMessagesCount > 0 && (
+                            <div
+                              onClick={() => {
+                                setActiveTab('messages');
+                                setShowNotifications(false);
+                              }}
+                              className="p-4 hover:bg-slate-50 cursor-pointer flex items-center justify-between"
+                            >
+                              <div>
+                                <p className="text-xs font-bold text-[#1e293b]">
+                                  You have {unreadMessagesCount} unread message{unreadMessagesCount > 1 ? 's' : ''}
+                                </p>
+                                <p className="text-[11px] text-slate-500">Click to open your conversations</p>
+                              </div>
+                              <span className="text-xs font-bold text-[#7c3aed]">&rarr;</span>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div onClick={() => setActiveTab('profile')} className="flex items-center space-x-2 border border-slate-200 rounded-full px-3 py-1.5 cursor-pointer hover:bg-slate-50">
                 <UserIcon className="w-3.5 h-3.5 text-purple-600" />
                 <span className="text-xs font-bold text-slate-800">{fullName ? fullName.split(' ')[0] : `@${username || 'Account'}`}</span>
@@ -585,7 +1068,11 @@ export default function App() {
                       <p className="text-xs text-slate-500 font-medium">Unread messages</p>
                       <p className="text-3xl font-extrabold text-[#1e293b] mt-2">{unreadMessagesCount}</p>
                       <p className="text-[11px] text-slate-400 mt-1">
-                        {unreadMessagesCount > 0 ? 'From 1 conversation' : 'All caught up'}
+                        {unreadMessagesCount > 0
+                          ? `From ${unreadConversationCount} conversation${unreadConversationCount > 1 ? 's' : ''}`
+                          : incomingPendingRequests.length > 0
+                          ? `${incomingPendingRequests.length} pending request${incomingPendingRequests.length > 1 ? 's' : ''}`
+                          : 'All caught up'}
                       </p>
                     </div>
                     <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
@@ -623,10 +1110,20 @@ export default function App() {
             {/* 2. MATCHES TAB */}
             {activeTab === 'matches' && (
               <div className="space-y-6 text-left">
-                <div>
-                  <span className="text-xs font-bold text-[#7c3aed] tracking-wider uppercase">RECOMMENDATIONS</span>
-                  <h1 className="text-3xl font-extrabold text-[#1e293b] mt-1">People who fit your rhythm</h1>
-                  <p className="text-xs text-slate-500 mt-1">Gender preference is applied as a separate eligibility filter. It does not affect compatibility scores.</p>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <span className="text-xs font-bold text-[#7c3aed] tracking-wider uppercase">RECOMMENDATIONS</span>
+                    <h1 className="text-3xl font-extrabold text-[#1e293b] mt-1">People who fit your rhythm</h1>
+                    <p className="text-xs text-slate-500 mt-1">Gender preference is applied as a separate eligibility filter. Scores compare all 11 lifestyle & housing preferences.</p>
+                  </div>
+                  {user && (
+                    <button
+                      onClick={() => refreshAllProfiles(user.id)}
+                      className="self-start sm:self-auto px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                    >
+                      Refresh matches
+                    </button>
+                  )}
                 </div>
 
                 {loadingMatches ? (
@@ -643,37 +1140,145 @@ export default function App() {
                 ) : (
                   <div className="grid md:grid-cols-2 gap-6">
                     {potentialMatchesList.map((match) => (
-                      <div key={match.id} className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                        <div className="flex justify-between items-start">
-                          <div className="flex items-center space-x-3">
-                            <div className="w-14 h-14 rounded-full bg-purple-100 text-[#7c3aed] font-bold flex items-center justify-center text-lg">{match.initials}</div>
-                            <div>
-                              <h3 className="font-bold text-lg text-[#1e293b] flex items-center space-x-1">
-                                <span>{match.name}</span>
-                                <CheckCircle2 className="w-4 h-4 text-blue-500 inline" />
-                              </h3>
-                              <p className="text-xs text-slate-500">{match.university}</p>
-                              <p className="text-xs text-slate-400">{match.location}</p>
+                      <div key={match.id} className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-4 flex flex-col justify-between">
+                        <div className="space-y-4">
+                          <div className="flex justify-between items-start">
+                            <div className="flex items-center space-x-3">
+                              <div className="w-14 h-14 rounded-full bg-purple-100 text-[#7c3aed] font-bold flex items-center justify-center text-lg">{match.initials}</div>
+                              <div>
+                                <h3 className="font-bold text-lg text-[#1e293b] flex items-center space-x-1">
+                                  <span>{match.name}</span>
+                                  <CheckCircle2 className="w-4 h-4 text-blue-500 inline" />
+                                </h3>
+                                <p className="text-xs text-slate-500">{match.university}</p>
+                                <p className="text-xs text-slate-400">
+                                  {match.location} {match.accommodationType !== 'Not specified' ? `• ${match.accommodationType}` : ''}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              {match.isIncomplete ? (
+                                <>
+                                  <span className="text-sm font-extrabold text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full">Pending</span>
+                                  <p className="text-[10px] text-slate-400 font-medium mt-1">Needs questionnaire</p>
+                                </>
+                              ) : (
+                                <>
+                                  <span className={`text-2xl font-extrabold ${
+                                    match.score >= 85 ? 'text-[#7c3aed]' : match.score >= 70 ? 'text-blue-600' : 'text-slate-700'
+                                  }`}>
+                                    {match.score}%
+                                  </span>
+                                  <p className={`text-[10px] font-bold ${
+                                    match.score >= 85 ? 'text-purple-600' : match.score >= 70 ? 'text-blue-600' : 'text-slate-500'
+                                  }`}>
+                                    {match.tag}
+                                  </p>
+                                </>
+                              )}
                             </div>
                           </div>
-                          <div className="text-right">
-                            <span className="text-2xl font-extrabold text-[#7c3aed]">{match.score}%</span>
-                            <p className="text-[10px] text-purple-600 font-bold">{match.tag}</p>
-                          </div>
+
+                          {match.isIncomplete ? (
+                            <div className="bg-amber-50/70 border border-amber-100 rounded-xl p-3 text-xs text-amber-800">
+                              {!match.hasUserFilledProfile
+                                ? 'Complete your lifestyle questionnaire in My profile to compute your compatibility score.'
+                                : `${match.name} has not filled out their lifestyle questionnaire yet.`}
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex flex-wrap gap-2">
+                                {match.matchedTraits.slice(0, 5).map((trait, idx) => (
+                                  <span key={idx} className="bg-purple-50 text-[#7c3aed] px-3 py-1 rounded-full text-xs font-medium">
+                                    ✓ {trait}
+                                  </span>
+                                ))}
+                                {match.partialTraits.slice(0, 2).map((trait, idx) => (
+                                  <span key={`p-${idx}`} className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-xs font-medium">
+                                    ~ {trait}
+                                  </span>
+                                ))}
+                              </div>
+
+                              <p className="text-xs text-slate-600 leading-relaxed">
+                                {match.matchedTraits.length > 0
+                                  ? `Strong alignment on ${match.matchedTraits.slice(0, 4).join(', ')}${match.matchedTraits.length > 4 ? ` (+${match.matchedTraits.length - 4} more)` : ''}.`
+                                  : match.partialTraits.length > 0
+                                  ? `Flexible compatibility on ${match.partialTraits.join(', ')}.`
+                                  : 'Different daily routines across compared lifestyle preferences.'}
+                              </p>
+                            </>
+                          )}
                         </div>
 
-                        <div className="flex flex-wrap gap-2">
-                          {match.traits.map((trait, idx) => (
-                            <span key={idx} className="bg-purple-50 text-[#7c3aed] px-3 py-1 rounded-full text-xs font-medium">
-                              ✓ {trait}
-                            </span>
-                          ))}
-                        </div>
+                        {(() => {
+                          const existingReq = conversationRequests.find(
+                            (r) =>
+                              (r.sender_id === user?.id && r.receiver_id === match.id) ||
+                              (r.sender_id === match.id && r.receiver_id === user?.id)
+                          );
 
-                        <p className="text-xs text-slate-600">You both align on {match.traits.join(', ')}.</p>
-                        <button onClick={() => setActiveTab('messages')} className="w-full bg-[#7c3aed] text-white p-3 rounded-xl text-xs font-semibold hover:bg-[#6d28d9] transition">
-                          Send message &rarr;
-                        </button>
+                          if (existingReq?.status === 'accepted') {
+                            return (
+                              <button
+                                onClick={() => {
+                                  setSelectedRequestId(existingReq.id);
+                                  setActiveTab('messages');
+                                }}
+                                className="w-full bg-emerald-600 text-white p-3 rounded-xl text-xs font-semibold hover:bg-emerald-700 transition"
+                              >
+                                Open conversation &rarr;
+                              </button>
+                            );
+                          }
+
+                          if (existingReq?.status === 'pending') {
+                            const isIncoming = existingReq.receiver_id === user?.id;
+                            return isIncoming ? (
+                              <div className="flex space-x-2">
+                                <button
+                                  onClick={() => handleRespondToRequest(existingReq.id, 'accepted')}
+                                  className="flex-1 bg-[#7c3aed] text-white p-3 rounded-xl text-xs font-semibold hover:bg-[#6d28d9] transition"
+                                >
+                                  Accept request
+                                </button>
+                                <button
+                                  onClick={() => handleRespondToRequest(existingReq.id, 'declined')}
+                                  className="flex-1 border border-slate-200 text-slate-700 p-3 rounded-xl text-xs font-semibold hover:bg-slate-50 transition"
+                                >
+                                  Decline
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                disabled
+                                className="w-full bg-slate-100 text-slate-500 p-3 rounded-xl text-xs font-semibold cursor-not-allowed"
+                              >
+                                Request sent (Pending acceptance)
+                              </button>
+                            );
+                          }
+
+                          if (existingReq?.status === 'declined') {
+                            return (
+                              <button
+                                disabled
+                                className="w-full bg-slate-100 text-slate-400 p-3 rounded-xl text-xs font-semibold cursor-not-allowed"
+                              >
+                                Request declined
+                              </button>
+                            );
+                          }
+
+                          return (
+                            <button
+                              onClick={() => handleRequestConversation(match.id, match.name)}
+                              className="w-full bg-[#7c3aed] text-white p-3 rounded-xl text-xs font-semibold hover:bg-[#6d28d9] transition"
+                            >
+                              Request conversation &rarr;
+                            </button>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
@@ -681,45 +1286,224 @@ export default function App() {
               </div>
             )}
 
-            {/* 3. MESSAGES TAB */}
+            {/* 3. MESSAGES TAB (CONSENT-BASED REAL-TIME CHAT) */}
             {activeTab === 'messages' && (
               <div className="space-y-6 text-left">
                 <div>
                   <span className="text-xs font-bold text-[#7c3aed] tracking-wider uppercase">MESSAGES</span>
                   <h1 className="text-3xl font-extrabold text-[#1e293b] mt-1">Your conversations</h1>
+                  <p className="text-xs text-slate-500 mt-1">Messaging opens once a conversation request is accepted by both students.</p>
                 </div>
 
-                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm grid md:grid-cols-3 min-h-[500px] overflow-hidden">
-                  <div className="border-r border-slate-100 p-4 space-y-4">
-                    <input type="text" placeholder="Search conversations..." className="w-full p-3 border border-slate-200 rounded-xl text-xs" />
-                    <div className="p-3 bg-purple-50 rounded-xl flex items-center justify-between cursor-pointer">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-10 h-10 rounded-full bg-purple-200 text-[#7c3aed] font-bold flex items-center justify-center text-xs">AY</div>
-                        <div>
-                          <p className="text-sm font-bold text-[#1e293b]">Amina</p>
-                          <p className="text-xs text-slate-500 truncate w-32">Your preference for a quiet...</p>
-                        </div>
+                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm grid md:grid-cols-3 min-h-[520px] overflow-hidden">
+                  {/* Left Sidebar: Accepted Conversations & Pending Requests */}
+                  <div className="border-r border-slate-100 p-4 space-y-3 overflow-y-auto">
+                    <input
+                      type="text"
+                      placeholder="Search conversations..."
+                      value={chatSearchQuery}
+                      onChange={(e) => setChatSearchQuery(e.target.value)}
+                      className="w-full p-3 border border-slate-200 rounded-xl text-xs focus:outline-none"
+                    />
+
+                    {userConversations.filter((c) =>
+                      c.partnerName.toLowerCase().includes(chatSearchQuery.toLowerCase())
+                    ).length === 0 ? (
+                      <div className="py-12 px-4 text-center space-y-2">
+                        <p className="text-xs font-semibold text-slate-600">No conversations yet</p>
+                        <p className="text-[11px] text-slate-400">
+                          Go to Matches and click "Request conversation" to connect with a compatible roommate.
+                        </p>
                       </div>
-                      <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-bold">100%</span>
-                    </div>
+                    ) : (
+                      userConversations
+                        .filter((c) =>
+                          c.partnerName.toLowerCase().includes(chatSearchQuery.toLowerCase())
+                        )
+                        .map((conv) => {
+                          const isSelected = selectedRequestId === conv.id;
+                          return (
+                            <div
+                              key={conv.id}
+                              onClick={() => setSelectedRequestId(conv.id)}
+                              className={`p-3 rounded-xl flex items-center justify-between cursor-pointer transition ${
+                                isSelected ? 'bg-purple-50 border border-purple-100' : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="flex items-center space-x-3 min-w-0">
+                                <div className="w-10 h-10 rounded-full bg-purple-200 text-[#7c3aed] font-bold flex items-center justify-center text-xs shrink-0">
+                                  {conv.initials}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center space-x-1.5">
+                                    <p className="text-sm font-bold text-[#1e293b] truncate">{conv.partnerName}</p>
+                                    {conv.unreadCount > 0 && (
+                                      <span className="w-2 h-2 rounded-full bg-[#7c3aed]"></span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-slate-500 truncate">{conv.lastMessageText}</p>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-col items-end space-y-1 shrink-0 ml-2">
+                                {conv.status === 'pending' ? (
+                                  <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-bold">
+                                    Pending
+                                  </span>
+                                ) : conv.score !== null ? (
+                                  <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-bold">
+                                    {conv.score}%
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })
+                    )}
                   </div>
 
-                  <div className="md:col-span-2 flex flex-col justify-between p-6 bg-slate-50/50">
-                    <div className="space-y-4">
-                      {messages.map((m) => (
-                        <div key={m.id} className={`flex ${m.sender === 'Me' ? 'justify-end' : 'justify-start'}`}>
-                          <div className={`p-4 rounded-2xl text-xs max-w-sm ${m.sender === 'Me' ? 'bg-[#7c3aed] text-white rounded-br-none' : 'bg-white text-slate-800 border border-slate-100 rounded-bl-none shadow-sm'}`}>
-                            <p>{m.text}</p>
-                            <p className={`text-[9px] mt-1 text-right ${m.sender === 'Me' ? 'text-purple-200' : 'text-slate-400'}`}>{m.time}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                  {/* Right Panel: Active Thread or Pending Request Decision */}
+                  <div className="md:col-span-2 flex flex-col justify-between bg-slate-50/50">
+                    {(() => {
+                      const activeConv = userConversations.find((c) => c.id === selectedRequestId);
 
-                    <form onSubmit={handleSendMessage} className="flex space-x-3 mt-6">
-                      <input type="text" placeholder="Write a message..." value={newMessage} onChange={e => setNewMessage(e.target.value)} className="flex-1 p-3 border border-slate-200 rounded-xl text-xs bg-white focus:outline-none" />
-                      <button type="submit" className="bg-[#7c3aed] text-white px-5 py-3 rounded-xl font-bold text-xs hover:bg-[#6d28d9] transition">Send</button>
-                    </form>
+                      if (!activeConv) {
+                        return (
+                          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3">
+                            <div className="w-12 h-12 rounded-2xl bg-purple-100 text-[#7c3aed] flex items-center justify-center">
+                              <MessageSquare className="w-6 h-6" />
+                            </div>
+                            <h3 className="text-sm font-bold text-slate-800">Select a conversation</h3>
+                            <p className="text-xs text-slate-500 max-w-xs">
+                              Choose an accepted match on the left to chat, or request a conversation from the Matches tab.
+                            </p>
+                          </div>
+                        );
+                      }
+
+                      if (activeConv.status === 'pending') {
+                        return (
+                          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
+                            <div className="w-14 h-14 rounded-full bg-purple-100 text-[#7c3aed] font-bold flex items-center justify-center text-lg">
+                              {activeConv.initials}
+                            </div>
+                            {activeConv.isIncoming ? (
+                              <>
+                                <h3 className="text-base font-bold text-[#1e293b]">
+                                  {activeConv.partnerName} wants to start a conversation
+                                </h3>
+                                <p className="text-xs text-slate-500 max-w-sm">
+                                  Accepting this request will unlock direct messaging between you and {activeConv.partnerName}.
+                                </p>
+                                <div className="flex items-center space-x-3 pt-2">
+                                  <button
+                                    onClick={() => handleRespondToRequest(activeConv.id, 'accepted')}
+                                    className="bg-[#7c3aed] text-white px-6 py-2.5 rounded-xl text-xs font-semibold hover:bg-[#6d28d9] transition"
+                                  >
+                                    Accept & Start Chat
+                                  </button>
+                                  <button
+                                    onClick={() => handleRespondToRequest(activeConv.id, 'declined')}
+                                    className="bg-white border border-slate-200 text-slate-700 px-6 py-2.5 rounded-xl text-xs font-semibold hover:bg-slate-50 transition"
+                                  >
+                                    Decline
+                                  </button>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <h3 className="text-base font-bold text-[#1e293b]">
+                                  Conversation request sent to {activeConv.partnerName}
+                                </h3>
+                                <p className="text-xs text-slate-500 max-w-sm">
+                                  {activeConv.partnerName} has been notified. Messaging will automatically unlock as soon as they accept your request.
+                                </p>
+                              </>
+                            )}
+                          </div>
+                        );
+                      }
+
+                      const threadMessages = messages.filter((m) => m.request_id === activeConv.id);
+
+                      return (
+                        <>
+                          {/* Conversation Header */}
+                          <div className="px-6 py-4 bg-white border-b border-slate-100 flex items-center justify-between">
+                            <div className="flex items-center space-x-3">
+                              <div className="w-9 h-9 rounded-full bg-purple-100 text-[#7c3aed] font-bold flex items-center justify-center text-xs">
+                                {activeConv.initials}
+                              </div>
+                              <div>
+                                <p className="text-sm font-bold text-[#1e293b]">{activeConv.partnerName}</p>
+                                <p className="text-[11px] text-emerald-600 font-medium">
+                                  Mutual consent active
+                                </p>
+                              </div>
+                            </div>
+                            {activeConv.score !== null && (
+                              <span className="text-xs font-bold text-[#7c3aed] bg-purple-50 px-3 py-1 rounded-full">
+                                {activeConv.score}% Match
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Messages Scroll Window */}
+                          <div className="flex-1 p-6 space-y-4 overflow-y-auto max-h-[360px]">
+                            {threadMessages.length === 0 ? (
+                              <div className="text-center text-xs text-slate-400 py-10">
+                                Conversation accepted! Send a message below to introduce yourself.
+                              </div>
+                            ) : (
+                              threadMessages.map((m) => {
+                                const isMine = m.sender_id === user?.id;
+                                const timeFormatted = new Date(m.created_at).toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                });
+                                return (
+                                  <div key={m.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+                                    <div
+                                      className={`p-4 rounded-2xl text-xs max-w-sm ${
+                                        isMine
+                                          ? 'bg-[#7c3aed] text-white rounded-br-none'
+                                          : 'bg-white text-slate-800 border border-slate-100 rounded-bl-none shadow-sm'
+                                      }`}
+                                    >
+                                      <p>{m.content}</p>
+                                      <p
+                                        className={`text-[9px] mt-1 text-right ${
+                                          isMine ? 'text-purple-200' : 'text-slate-400'
+                                        }`}
+                                      >
+                                        {timeFormatted}
+                                      </p>
+                                    </div>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+
+                          {/* Message Input Form */}
+                          <form onSubmit={handleSendMessage} className="p-4 bg-white border-t border-slate-100 flex space-x-3">
+                            <input
+                              type="text"
+                              placeholder={`Message ${activeConv.partnerName}...`}
+                              value={newMessage}
+                              onChange={(e) => setNewMessage(e.target.value)}
+                              className="flex-1 p-3 border border-slate-200 rounded-xl text-xs bg-slate-50 focus:bg-white focus:outline-none"
+                            />
+                            <button
+                              type="submit"
+                              className="bg-[#7c3aed] text-white px-5 py-3 rounded-xl font-bold text-xs hover:bg-[#6d28d9] transition"
+                            >
+                              Send
+                            </button>
+                          </form>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
