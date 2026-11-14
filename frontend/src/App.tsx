@@ -57,11 +57,16 @@ export default function App() {
     return 'high';
   }, [minBudget, maxBudget]);
 
-  // Privacy & Settings States
+  // Privacy & Settings States (Persisted to Supabase)
   const [showGenderInMatches, setShowGenderInMatches] = useState(true);
   const [allowMatchInvitations, setAllowMatchInvitations] = useState(true);
   const [notifyMatches, setNotifyMatches] = useState(true);
   const [notifyMessages, setNotifyMessages] = useState(true);
+  
+  // Password change states in Settings
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [showPasswordConfirmModal, setShowPasswordConfirmModal] = useState(false);
 
   // Real-time Conversation Requests & Chat Messaging States
   const [conversationRequests, setConversationRequests] = useState<any[]>([]);
@@ -218,6 +223,9 @@ export default function App() {
           location: other.location || 'Campus Area',
           accommodationType: other.accommodation_type || 'Not specified',
           budgetCategory: otherBudgetCat || 'Not specified',
+          gender: other.gender || '',
+          showGender: other.show_gender_in_matches !== false,
+          allowInvitations: other.allow_match_invitations !== false,
           score: finalScore,
           isIncomplete,
           hasUserFilledProfile,
@@ -519,7 +527,7 @@ export default function App() {
     e.preventDefault();
 
     if (password !== confirmPassword) {
-      alert("Passwords do not match.");
+      triggerToast("Passwords do not match.", 'error');
       return;
     }
 
@@ -541,7 +549,7 @@ export default function App() {
       });
 
       if (error) {
-        alert(error.message || "Registration failed. Please try again.");
+        triggerToast(error.message || "Registration failed. Please try again.", 'error');
         return;
       }
 
@@ -557,11 +565,11 @@ export default function App() {
             gender: gender
           }
         ]);
-        alert("Account created successfully! You can now log in using your username.");
+        triggerToast("Account created successfully! You can now log in using your username.");
         setView('login');
       }
     } catch (err: any) {
-      alert(err.message || "An unexpected error occurred during registration.");
+      triggerToast(err.message || "An unexpected error occurred during registration.", 'error');
     }
   };
 
@@ -593,6 +601,20 @@ export default function App() {
       setFoodPreference(data.food_preference || '');
       setPets(data.pet_preference || '');
       setStudyHabits(data.study_habits || '');
+
+      // Load Privacy & Notification Settings from Supabase
+      if (data.show_gender_in_matches !== null && data.show_gender_in_matches !== undefined) {
+        setShowGenderInMatches(data.show_gender_in_matches);
+      }
+      if (data.allow_match_invitations !== null && data.allow_match_invitations !== undefined) {
+        setAllowMatchInvitations(data.allow_match_invitations);
+      }
+      if (data.notify_matches !== null && data.notify_matches !== undefined) {
+        setNotifyMatches(data.notify_matches);
+      }
+      if (data.notify_messages !== null && data.notify_messages !== undefined) {
+        setNotifyMessages(data.notify_messages);
+      }
     } else if (authUser) {
       const meta = authUser.user_metadata || {};
       const fallbackUsername = meta.username || (authUser.email ? authUser.email.split('@')[0] : '');
@@ -635,7 +657,7 @@ export default function App() {
     });
 
     if (error) {
-      alert(error.message);
+      triggerToast(error.message, 'error');
     } else if (data.user) {
       setUser(data.user);
       setView('dashboard');
@@ -701,15 +723,66 @@ export default function App() {
         guest_preference: guests,
         food_preference: foodPreference,
         pet_preference: pets,
-        study_habits: studyHabits
+        study_habits: studyHabits,
+        show_gender_in_matches: showGenderInMatches,
+        allow_match_invitations: allowMatchInvitations,
+        notify_matches: notifyMatches,
+        notify_messages: notifyMessages
       }
     ]);
 
     if (error) {
-      alert("Failed to save preferences: " + error.message);
+      triggerToast("Failed to save preferences: " + error.message, 'error');
     } else {
       await refreshAllProfiles(user.id);
-      alert("Preferences saved! Your compatibility matches have been recalculated.");
+      triggerToast("Preferences saved! Your compatibility matches have been recalculated.");
+    }
+  };
+
+  // Save Settings Toggles instantly to Supabase
+  const handleUpdateSetting = async (key: string, value: boolean) => {
+    if (!user) return;
+    
+    if (key === 'show_gender_in_matches') setShowGenderInMatches(value);
+    if (key === 'allow_match_invitations') setAllowMatchInvitations(value);
+    if (key === 'notify_matches') setNotifyMatches(value);
+    if (key === 'notify_messages') setNotifyMessages(value);
+
+    const { error } = await supabase.from('profiles').update({
+      [key]: value
+    }).eq('id', user.id);
+
+    if (error) {
+      triggerToast("Failed to update setting: " + error.message, 'error');
+    } else {
+      triggerToast("Setting saved!");
+    }
+  };
+
+  // Handle Password Update in Settings (Step 1: Validate & open confirmation modal)
+  const handleUpdatePassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPassword || newPassword.length < 6) {
+      triggerToast("Password must be at least 6 characters.", 'error');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      triggerToast("New passwords do not match.", 'error');
+      return;
+    }
+    setShowPasswordConfirmModal(true);
+  };
+
+  // Handle Password Update in Settings (Step 2: Confirmed execution)
+  const confirmPasswordChange = async () => {
+    setShowPasswordConfirmModal(false);
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      triggerToast(error.message, 'error');
+    } else {
+      triggerToast("Password updated successfully!");
+      setNewPassword('');
+      setConfirmNewPassword('');
     }
   };
 
@@ -819,11 +892,48 @@ export default function App() {
       <div className="min-h-screen bg-[#f8fafc] text-slate-800 flex font-sans relative">
         {/* Toast Banner */}
         {toastNotice && (
-          <div className={`fixed bottom-6 right-6 z-50 px-5 py-3.5 rounded-2xl shadow-xl text-xs font-semibold text-white flex items-center space-x-2 transition-all ${
+          <div className={`fixed bottom-6 right-6 z-50 px-5 py-3.5 rounded-2xl shadow-xl text-xs font-semibold text-white flex items-center transition-all ${
             toastNotice.type === 'error' ? 'bg-red-600' : 'bg-[#0f172a] border border-slate-700'
           }`}>
-            <Sparkles className="w-4 h-4 text-[#7c3aed]" />
             <span>{toastNotice.title}</span>
+          </div>
+        )}
+
+        {/* Password Change Confirmation Modal */}
+        {showPasswordConfirmModal && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4 text-left">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-purple-100 text-[#7c3aed] flex items-center justify-center shrink-0">
+                  <Settings className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#1e293b]">Confirm password change</h3>
+                  <p className="text-xs text-slate-500">Security verification</p>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Are you sure you want to change your account password? You will need to use your new password the next time you sign in.
+              </p>
+
+              <div className="flex items-center justify-end space-x-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowPasswordConfirmModal(false)}
+                  className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmPasswordChange}
+                  className="px-5 py-2.5 rounded-xl bg-[#7c3aed] text-white text-xs font-semibold hover:bg-[#6d28d9] transition shadow-sm"
+                >
+                  Yes, change password
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -902,7 +1012,7 @@ export default function App() {
           <header className="h-16 border-b border-slate-200/80 bg-white px-8 flex items-center justify-between sticky top-0 z-40">
             <div className="text-left">
               <h4 className="text-sm font-bold text-[#1e293b]">{university}</h4>
-              <p className="text-xs text-slate-500">Spring housing cycle</p>
+              <p className="text-xs text-slate-500">Lifestyle-based roommate finder</p>
             </div>
             
             <div className="flex items-center space-x-4 relative">
@@ -1149,6 +1259,11 @@ export default function App() {
                                 <h3 className="font-bold text-lg text-[#1e293b] flex items-center space-x-1">
                                   <span>{match.name}</span>
                                   <CheckCircle2 className="w-4 h-4 text-blue-500 inline" />
+                                  {match.showGender && match.gender && (
+                                    <span className="ml-2 text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                                      {match.gender}
+                                    </span>
+                                  )}
                                 </h3>
                                 <p className="text-xs text-slate-500">{match.university}</p>
                                 <p className="text-xs text-slate-400">
@@ -1266,6 +1381,17 @@ export default function App() {
                                 className="w-full bg-slate-100 text-slate-400 p-3 rounded-xl text-xs font-semibold cursor-not-allowed"
                               >
                                 Request declined
+                              </button>
+                            );
+                          }
+
+                          if (!match.allowInvitations) {
+                            return (
+                              <button
+                                disabled
+                                className="w-full bg-slate-100 text-slate-400 p-3 rounded-xl text-xs font-semibold cursor-not-allowed"
+                              >
+                                Invitations paused by user
                               </button>
                             );
                           }
@@ -1566,10 +1692,10 @@ export default function App() {
                     </div>
 
                     <div>
-                      <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Location or campus</label>
-                      <input type="text" placeholder="e.g. North Campus" value={locationCampus} onChange={e => setLocationCampus(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-sm" />
+                      <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Location</label>
+                      <input type="text" placeholder="Write the location" value={locationCampus} onChange={e => setLocationCampus(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl text-sm" />
                     </div>
-
+ 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Min budget ($)</label>
@@ -1727,6 +1853,7 @@ export default function App() {
                 <div>
                   <span className="text-xs font-bold text-[#7c3aed] tracking-wider uppercase">ACCOUNT SETTINGS</span>
                   <h1 className="text-3xl font-extrabold text-[#1e293b] mt-1">Preferences & Privacy</h1>
+                  <p className="text-xs text-slate-500 mt-1">Changes save automatically to your account.</p>
                 </div>
 
                 <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm space-y-6">
@@ -1735,31 +1862,81 @@ export default function App() {
                       <p className="text-sm font-bold text-[#1e293b]">Show gender in match cards</p>
                       <p className="text-xs text-slate-500">Allow your verified gender to be visible to verified matches.</p>
                     </div>
-                    <input type="checkbox" checked={showGenderInMatches} onChange={e => setShowGenderInMatches(e.target.checked)} className="w-5 h-5 accent-[#7c3aed]" />
+                    <input 
+                      type="checkbox" 
+                      checked={showGenderInMatches} 
+                      onChange={e => handleUpdateSetting('show_gender_in_matches', e.target.checked)} 
+                      className="w-5 h-5 accent-[#7c3aed] cursor-pointer" 
+                    />
                   </div>
 
                   <div className="flex items-center justify-between py-3 border-b border-slate-100">
                     <div>
                       <p className="text-sm font-bold text-[#1e293b]">Allow match invitations</p>
-                      <p className="text-xs text-slate-500">Let high-compatibility students message you directly.</p>
+                      <p className="text-xs text-slate-500">Let high-compatibility students request conversations with you.</p>
                     </div>
-                    <input type="checkbox" checked={allowMatchInvitations} onChange={e => setAllowMatchInvitations(e.target.checked)} className="w-5 h-5 accent-[#7c3aed]" />
+                    <input 
+                      type="checkbox" 
+                      checked={allowMatchInvitations} 
+                      onChange={e => handleUpdateSetting('allow_match_invitations', e.target.checked)} 
+                      className="w-5 h-5 accent-[#7c3aed] cursor-pointer" 
+                    />
                   </div>
 
                   <div className="flex items-center justify-between py-3 border-b border-slate-100">
                     <div>
                       <p className="text-sm font-bold text-[#1e293b]">Email notifications for new matches</p>
-                      <p className="text-xs text-slate-500">Receive weekly digests when a new student matches above 80%.</p>
+                      <p className="text-xs text-slate-500">Receive alerts when a new student matches above 80%.</p>
                     </div>
-                    <input type="checkbox" checked={notifyMatches} onChange={e => setNotifyMatches(e.target.checked)} className="w-5 h-5 accent-[#7c3aed]" />
+                    <input 
+                      type="checkbox" 
+                      checked={notifyMatches} 
+                      onChange={e => handleUpdateSetting('notify_matches', e.target.checked)} 
+                      className="w-5 h-5 accent-[#7c3aed] cursor-pointer" 
+                    />
                   </div>
 
-                  <div className="flex items-center justify-between py-3">
+                  <div className="flex items-center justify-between py-3 border-b border-slate-100">
                     <div>
                       <p className="text-sm font-bold text-[#1e293b]">Email notifications for messages</p>
                       <p className="text-xs text-slate-500">Get notified when a roommate sends you a chat message.</p>
                     </div>
-                    <input type="checkbox" checked={notifyMessages} onChange={e => setNotifyMessages(e.target.checked)} className="w-5 h-5 accent-[#7c3aed]" />
+                    <input 
+                      type="checkbox" 
+                      checked={notifyMessages} 
+                      onChange={e => handleUpdateSetting('notify_messages', e.target.checked)} 
+                      className="w-5 h-5 accent-[#7c3aed] cursor-pointer" 
+                    />
+                  </div>
+
+                  {/* Change Password Section */}
+                  <div className="pt-4">
+                    <h3 className="text-sm font-bold text-[#1e293b] mb-4">Change Password</h3>
+                    <form onSubmit={handleUpdatePassword} className="space-y-4 max-w-md">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">New password</label>
+                        <input 
+                          type="password" 
+                          placeholder="At least 6 characters" 
+                          value={newPassword} 
+                          onChange={e => setNewPassword(e.target.value)} 
+                          className="w-full p-3 border border-slate-200 rounded-xl text-xs" 
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Confirm new password</label>
+                        <input 
+                          type="password" 
+                          placeholder="Repeat new password" 
+                          value={confirmNewPassword} 
+                          onChange={e => setConfirmNewPassword(e.target.value)} 
+                          className="w-full p-3 border border-slate-200 rounded-xl text-xs" 
+                        />
+                      </div>
+                      <button type="submit" className="bg-[#7c3aed] text-white px-6 py-2.5 rounded-xl text-xs font-semibold hover:bg-[#6d28d9] transition">
+                        Update password
+                      </button>
+                    </form>
                   </div>
                 </div>
               </div>
@@ -1921,7 +2098,7 @@ export default function App() {
           <form onSubmit={handleRegister} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-              <input type="text" placeholder="e.g. daniella" value={username} onChange={e => setUsername(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
+              <input type="text" placeholder="Choose a username" value={username} onChange={e => setUsername(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
             <div>
@@ -1931,7 +2108,7 @@ export default function App() {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">University or institution</label>
-              <input type="text" value={university} onChange={e => setUniversity(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
+              <input type="text" placeholder="Your university or institution" value={university} onChange={e => setUniversity(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
             <div>
@@ -1973,8 +2150,8 @@ export default function App() {
           <h2 className="text-2xl font-bold text-slate-900 mb-6">Welcome back</h2>
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Username or email</label>
-              <input type="text" placeholder="e.g. daniella" value={loginInput} onChange={e => setLoginInput(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+              <input type="text" placeholder="Username" value={loginInput} onChange={e => setLoginInput(e.target.value)} required className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#7c3aed]/50" />
             </div>
 
             <div>
